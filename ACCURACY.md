@@ -69,3 +69,12 @@ Every one of the seven came back `unbalanced`. None was reported as ok while wro
 ## Speed (measured 2026-10-15 05:0x)
 
 20 statements, 120 pages, 3,251 rows: converted, checked and written as xlsx/csv/json plus the combined workbook in **15.5 s wall** on this PC (WSL, `/usr/bin/time`). That is under 1 s per statement. OCR is not included; it costs 15 to 25 s per scanned statement.
+
+## Random statements (tests/fuzz.py)
+
+Each one varies column layout (one amount column or debit and credit columns), date style (03/14, 14/03, 2026-03-14, Mar 14, with or without the year), negative style (-12.00, 12.00-, (12.00)), dollar sign or none, font size 7 to 10, Letter or A4, and 3 to 60 rows across pages.
+
+- First run, 150 statements: 137 exact. **8 came back `ok` with every sign reversed.** "($1,460.06)" lost its minus, and the balances happened to add up under the card convention. This is the worst kind of failure, and fuzzing found it, not a person. Fixed two ways: the bracket is read outside the currency sign, and on a bank statement a balance that only adds up with every sign reversed now turns the signs round and says so.
+- After the fix, the same 150: 145 exact. A fresh 150 (different seed): 147 exact.
+- Every remaining miss is a long description printed over the amount column, which hides the amount. Each of those comes back `unbalanced` with the row named, never `ok`.
+- `test_random_statements_are_never_ok_and_wrong` runs 30 of these on every check. It fails if any comes back `ok` while wrong, and it caught the mutant with both fixes removed.
