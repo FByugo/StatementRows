@@ -77,7 +77,7 @@ def write_xlsx(res: Result, path: Path) -> None:
         ws.cell(r, 9).number_format = "yyyy-mm-dd"
         ws.cell(r, 3).number_format = "#,##0.00"
         ws.cell(r, 5).number_format = "#,##0.00"
-        if t.check == "break" or t.date is None:
+        if t.check.startswith("break") or t.date is None:
             for c in ws[r]:
                 c.fill = bad
     widths = {"A": 12, "B": 60, "C": 13, "D": 10, "E": 14, "F": 24, "G": 30, "H": 6, "I": 12, "J": 20, "K": 16}

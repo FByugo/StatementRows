@@ -931,6 +931,16 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
                 else:
                     t.check = "break"
                     breaks += 1
+                    expected = prev + sign * t.amount
+                    nxt = next((u for u in txns[k + 1:] if u.balance is not None and u.account == t.account), None)
+                    if nxt is not None and abs(expected + sign * nxt.amount - nxt.balance) < CENT:
+                        # the next row agrees with the corrected figure: only this printed balance is wrong
+                        res.problems.append(
+                            f"row {k + 1} ({t.raw_date} {t.description[:40]}): the printed balance {t.balance} "
+                            f"is off by {t.balance - expected}; it should be {expected}, and the next row agrees")
+                        t.check = "break (printed balance)"
+                        prev = expected
+                        continue
                     res.problems.append(
                         f"row {k + 1} ({t.raw_date} {t.description[:40]}): balance {t.balance} "
                         f"does not follow from {prev} and {t.amount}")

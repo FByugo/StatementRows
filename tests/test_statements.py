@@ -37,7 +37,9 @@ def test_a_wrong_balance_is_named_not_hidden(tmp):
     bad = list(good); bad[3] += 10          # the printed balance on row 4 is off by 10
     res = read_statement(str(make_statement(tmp / "b.pdf", ROWS, opening=1000.00, balances=bad)))
     assert res.status == "unbalanced"
-    assert any(p.startswith("row 4 ") for p in res.problems), res.problems
+    assert [p for p in res.problems if p.startswith("row ")] == [
+        "row 4 (01/09 POWER COMPANY): the printed balance 2111.28 is off by 10.00; it should be 2101.28, "
+        "and the next row agrees"], res.problems
 
 
 def test_a_missing_row_is_caught_by_the_totals(tmp):
