@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 
 from .core import Result, read_statement
+from . import ofx as ofx_mod
 from .output import summary, write_all, write_combined
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -19,6 +20,8 @@ def main(
     out: Path = typer.Option(Path("out"), "--out", "-o", help="folder for the results"),
     strict: bool = typer.Option(False, help="exit 1 unless every statement balanced"),
     ocr: bool = typer.Option(False, help="read scanned pages with OCR (experimental, slow; needs rapidocr-onnxruntime)"),
+    ofx: bool = typer.Option(False, help="also write an .ofx file per statement (Xero, Quicken and most accounting software)"),
+    qbo: str = typer.Option("", help="also write a QuickBooks .qbo file per statement, using this bank id (INTU.BID)"),
 ) -> None:
     files = sorted(p for p in src.iterdir() if p.suffix.lower() == ".pdf") if src.is_dir() else [src]
     if not files:
@@ -30,6 +33,10 @@ def main(
         try:
             res = read_statement(str(f), use_ocr=ocr)
             write_all(res, out, f.stem)
+            if ofx:
+                ofx_mod.write(res, out / f"{f.stem}.ofx")
+            if qbo:
+                ofx_mod.write(res, out / f"{f.stem}.qbo", bank_id=qbo)
         except Exception as e:  # noqa: BLE001 - one bad file must not stop the batch
             res = Result(path=str(f), status="error", problems=[f"could not be processed: {type(e).__name__}: {e}"[:300]])
         results.append(res)

@@ -1,4 +1,5 @@
 import csv
+import re
 import json
 from datetime import date
 from decimal import Decimal
@@ -391,3 +392,39 @@ def test_one_crashing_file_does_not_stop_the_batch(tmp, monkeypatch):
     assert r.exit_code == 0, r.output
     summary = {s["file"]: s["status"] for s in csv.DictReader(open(tmp / "o" / "summary.csv"))}
     assert summary == {"a.pdf": "error", "b.pdf": "ok"}
+
+
+def test_ofx_and_qbo_files(tmp):
+    from statementrows import ofx
+    pdf = make_statement(tmp / "jan.pdf", ROWS, opening=1000.00)
+    res = read_statement(str(pdf))
+    text = ofx.build(res)
+    assert ofx.amounts_in(text) == [Decimal(str(r[2])).quantize(Decimal("0.01")) for r in ROWS]
+    assert "<BANKMSGSRSV1>" in text and "<INTU.BID>" not in text
+    assert text == ofx.build(read_statement(str(pdf)))            # same ids every run: a re-import is not doubled
+    assert len(set(re.findall(r"<FITID>(\w+)", text))) == len(ROWS)
+    assert "<LEDGERBAL><BALAMT>3856.28" in text
+    qbo = ofx.build(res, bank_id="12345")
+    assert "<INTU.BID>12345" in qbo
+    r = CliRunner().invoke(app, [str(pdf), "--out", str(tmp / "o"), "--ofx", "--qbo", "12345"])
+    assert r.exit_code == 0 and (tmp / "o" / "jan.ofx").exists() and (tmp / "o" / "jan.qbo").exists()
+
+
+def test_ofx_for_a_card_and_markup_in_descriptions(tmp):
+    from statementrows import ofx
+    res = read_statement(str(make_card_sections(
+        tmp / "card.pdf", previous=812.40, credits=[("01/12", "Payment <Thank You> & Co", 500.00)],
+        purchases=[("01/05", "STARBUCKS STORE 1182", 6.45)])))
+    text = ofx.build(res)
+    assert "<CREDITCARDMSGSRSV1>" in text and "<CCACCTFROM>" in text
+    assert "<Thank" not in text and "&" not in text.split("<BANKTRANLIST>")[1]
+    assert ofx.amounts_in(text) == [Decimal("500.00"), Decimal("-6.45")]
+
+
+@pytest.mark.skipif(not (LOCAL / "cuanswers-sample.pdf").exists(), reason="local-only sample")
+def test_ofx_one_file_per_account(tmp):
+    from statementrows import ofx
+    paths = ofx.write(read_statement(str(LOCAL / "cuanswers-sample.pdf")), tmp / "cu.ofx")
+    names = [p.name for p in paths]
+    assert len(paths) == 8 and "cu-110-REGULAR-CHECKING.ofx" in names
+    assert "<LEDGERBAL><BALAMT>223.29" in (tmp / "cu-110-REGULAR-CHECKING.ofx").read_text()

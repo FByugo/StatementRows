@@ -26,7 +26,9 @@ For each PDF:
 - `.xlsx` with a Transactions sheet (rows that broke are shaded) and a Check sheet saying what was checked and what didn't add up.
 - `.csv` and `.json` with the same rows.
 
-Plus `summary.csv` with one line per statement.
+Plus `summary.csv` with one line per statement, and `all statements.xlsx` with a sheet per statement when there's more than one.
+
+`--ofx` also writes an `.ofx` file for Xero, Quicken and most accounting software. `--qbo BANKID` writes a QuickBooks `.qbo` file (QuickBooks only accepts a bank id it knows, so use your bank's). A statement with several accounts gets one file per account.
 
 Columns: date, description, amount (money in positive, money out negative), direction, balance, check, account, page, a second date when the bank prints two, a note, and ref (cheque numbers and the like).
 
@@ -42,6 +44,6 @@ It runs on your computer. Nothing is uploaded and no copy of the PDF is made. It
 
 ## Tests
 
-`./check.sh` runs 50 tests (4 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
+`./check.sh` runs 53 tests (5 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
 
 Sample statements in `corpus/` are synthetic, from the Bankstatemently benchmark (MIT), AyonPal's parser repo (MIT), Synthesized (CC BY 4.0) and AgamiAI (Apache 2.0).
