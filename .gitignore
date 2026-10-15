@@ -1,0 +1,5 @@
+corpus/_local/
+.venv/
+*.egg-info/
+__pycache__/
+out/

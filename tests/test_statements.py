@@ -1,0 +1,191 @@
+import csv
+import json
+from datetime import date
+from decimal import Decimal
+
+import openpyxl
+import pytest
+from reportlab.pdfgen import canvas
+from typer.testing import CliRunner
+
+from statementrows.cli import app
+from statementrows.core import read_statement
+from statementrows.output import write_all
+
+from conftest import CORPUS, ROWS, make_statement
+
+
+def amounts(res):
+    return [float(t.amount) for t in res.txns]
+
+
+# ---------------------------------------------------------------- built statements
+
+def test_clean_statement_balances(tmp):
+    res = read_statement(str(make_statement(tmp / "a.pdf", ROWS, opening=1000.00)))
+    assert res.status == "ok", res.problems
+    assert amounts(res) == [r[2] for r in ROWS]
+    assert res.txns[0].date == date(2026, 1, 2)
+    assert all(t.check == "ok" for t in res.txns)
+    assert any("totals" in c for c in res.checks)
+
+
+def test_a_wrong_balance_is_named_not_hidden(tmp):
+    bal, good = 1000.00, []
+    for _, _, a in ROWS:
+        bal = round(bal + a, 2); good.append(bal)
+    bad = list(good); bad[3] += 10          # the printed balance on row 4 is off by 10
+    res = read_statement(str(make_statement(tmp / "b.pdf", ROWS, opening=1000.00, balances=bad)))
+    assert res.status == "unbalanced"
+    assert any(p.startswith("row 4 ") for p in res.problems), res.problems
+
+
+def test_a_missing_row_is_caught_by_the_totals(tmp):
+    full_close = round(1000.00 + sum(r[2] for r in ROWS), 2)
+    short = ROWS[:4] + ROWS[5:]               # the ATM row is not in the table
+    bal, bals = 1000.00, []
+    for _, _, a in short:
+        bal = round(bal + a, 2); bals.append(bal)
+    res = read_statement(str(make_statement(tmp / "c.pdf", short, opening=1000.00, closing=full_close,
+                                            balances=bals)))
+    assert res.status == "unbalanced"
+    assert any("does not reach closing" in p for p in res.problems), res.problems
+
+
+@pytest.mark.parametrize("style", ["plain", "trailing", "paren", "crdr"])
+def test_one_amount_column_in_every_sign_style(tmp, style):
+    res = read_statement(str(make_statement(tmp / f"{style}.pdf", ROWS, opening=1000.00, split_columns=False,
+                                            header=("Date", "Description", "Amount", "Balance"), style=style)))
+    assert res.status == "ok", (style, res.problems)
+    assert amounts(res) == [r[2] for r in ROWS]
+
+
+def test_year_rolls_back_across_new_year(tmp):
+    rows = [("12/20", "GIFT SHOP", -40.00), ("12/31", "INTEREST", 1.25), ("01/05", "PAYROLL", 900.00)]
+    res = read_statement(str(make_statement(tmp / "y.pdf", rows, opening=100.00,
+                                            period="12/15/2025 - 01/14/2026")))
+    assert [t.date for t in res.txns] == [date(2025, 12, 20), date(2025, 12, 31), date(2026, 1, 5)]
+    assert res.status == "ok", res.problems
+
+
+def test_day_first_dates(tmp):
+    rows = [("02/01", "PAYROLL", 900.00), ("13/01", "RENT", -500.00), ("28/01", "SHOP", -20.00)]
+    res = read_statement(str(make_statement(tmp / "d.pdf", rows, opening=100.00,
+                                            period="01/01/2026 - 31/01/2026")))
+    assert [t.date for t in res.txns] == [date(2026, 1, 2), date(2026, 1, 13), date(2026, 1, 28)]
+
+
+def test_second_description_line_joins_its_row(tmp):
+    res = read_statement(str(make_statement(tmp / "m.pdf", ROWS, opening=1000.00,
+                                            desc_below={2: "STORE 1182 SPRINGFIELD IL"})))
+    assert res.txns[2].description == "GROCERY STORE 1182 STORE 1182 SPRINGFIELD IL"
+    assert res.txns[3].description == "POWER COMPANY"
+
+
+def test_rows_over_several_pages(tmp):
+    rows = [(f"01/{1 + k % 28:02d}", f"CARD PAYMENT {k}", -1.00 - k) for k in range(60)]
+    rows.sort(key=lambda r: r[0])
+    res = read_statement(str(make_statement(tmp / "p.pdf", rows, opening=5000.00, rows_per_page=25)))
+    assert len(res.txns) == 60
+    assert res.status == "ok", res.problems
+
+
+def test_scan_encrypted_and_broken(tmp):
+    scan = tmp / "scan.pdf"
+    c = canvas.Canvas(str(scan)); c.rect(50, 50, 400, 600, fill=1); c.save()
+    assert read_statement(str(scan)).status == "needs_ocr"
+
+    locked = tmp / "locked.pdf"
+    c = canvas.Canvas(str(locked), encrypt="secret"); c.drawString(50, 700, "x"); c.save()
+    assert read_statement(str(locked)).status == "encrypted"
+
+    broken = tmp / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4 this is not really a pdf")
+    assert read_statement(str(broken)).status == "unreadable"
+
+
+# ---------------------------------------------------------------- outside samples nobody here made
+
+BSB = sorted((CORPUS / "bankstatemently").glob("bsb-*-statement.pdf"))
+
+
+@pytest.mark.parametrize("pdf", BSB, ids=lambda p: p.stem)
+def test_bankstatemently_benchmark(pdf):
+    info = json.loads((pdf.parent / pdf.name.replace("-statement.pdf", ".info.json")).read_text())
+    res = read_statement(str(pdf))
+    assert res.status == "ok", res.problems
+    assert len(res.txns) == info["transactionCount"]
+
+
+AYON = sorted((CORPUS / "ayonpal").glob("*.pdf"))
+
+
+@pytest.mark.parametrize("pdf", AYON, ids=lambda p: p.stem)
+def test_ayonpal_every_field(pdf):
+    truth = list(csv.DictReader(open(pdf.with_suffix(".csv"))))
+    res = read_statement(str(pdf))
+    assert res.status == "ok", res.problems
+    assert len(res.txns) == len(truth)
+    for t, want in zip(res.txns, truth):
+        d, m, y = want["date"].split("-")
+        assert t.date == date(int(y), int(m), int(d))
+        assert t.amount == Decimal(want["deposit"] or 0) - Decimal(want["withdrawal"] or 0)
+        assert t.balance == Decimal(want["balance"])
+        assert t.description == want["description"]
+
+
+def test_synthesized_every_field():
+    truth = json.loads((CORPUS / "synthesized" / "syn-0042.json").read_text())
+    res = read_statement(str(CORPUS / "synthesized" / "syn-0042-clean.pdf"))
+    assert res.status == "ok", res.problems
+    assert [(t.date.isoformat(), t.description, float(t.amount)) for t in res.txns] == \
+        [(x["date"], x["description"], x["amount"]) for x in truth["transactions"]]
+    assert float(res.opening) == truth["opening_balance"]
+    assert float(res.closing) == truth["closing_balance"]
+    assert read_statement(str(CORPUS / "synthesized" / "syn-0042-scanned.pdf")).status == "needs_ocr"
+
+
+@pytest.mark.skipif(not (CORPUS / "_local" / "fivestar-sample.pdf").exists(), reason="local-only sample")
+def test_real_bank_sample_with_pages_left_out():
+    # page 1 of a 5 page statement: the summary counts 43 debits, the page holds 36
+    res = read_statement(str(CORPUS / "_local" / "fivestar-sample.pdf"))
+    assert res.status == "unbalanced"
+    assert any("7 debit row(s) are missing" in p for p in res.problems), res.problems
+    assert any("credits add up to the printed total 3782.09" in c for c in res.checks)
+    assert all(t.check.startswith("ok") for t in res.txns)      # every printed row chains; rows are missing, not wrong
+    assert any("could not be read" in p for p in res.problems)  # the sample prints a 2/30, which is no date
+
+
+# ---------------------------------------------------------------- what the buyer opens
+
+def test_excel_marks_the_broken_row(tmp):
+    bal, good = 1000.00, []
+    for _, _, a in ROWS:
+        bal = round(bal + a, 2); good.append(bal)
+    good[3] += 10
+    res = read_statement(str(make_statement(tmp / "x.pdf", ROWS, opening=1000.00, balances=good)))
+    xlsx, _, _ = write_all(res, tmp / "out", "x")
+    ws = openpyxl.load_workbook(xlsx)["Transactions"]
+    fills = [ws.cell(r, 1).fill.fgColor.rgb for r in range(2, ws.max_row + 1)]
+    assert fills[3].endswith("F8D7DA") and not fills[2].endswith("F8D7DA")
+    check = [r[1] for r in openpyxl.load_workbook(xlsx)["Check"].iter_rows(values_only=True)]
+    assert "unbalanced" in check
+
+
+def test_cli_folder_and_strict(tmp):
+    make_statement(tmp / "in" / "good.pdf", ROWS, opening=1000.00) if (tmp / "in").mkdir() is None else None
+    (tmp / "in" / "broken.pdf").write_bytes(b"%PDF-1.4 nope")
+    r = CliRunner().invoke(app, [str(tmp / "in"), "--out", str(tmp / "o"), "--strict"])
+    assert r.exit_code == 1
+    assert "1 of 2 statement(s) balanced" in r.output
+    summary = list(csv.DictReader(open(tmp / "o" / "summary.csv")))
+    assert {s["file"]: s["status"] for s in summary} == {"broken.pdf": "unreadable", "good.pdf": "ok"}
+
+
+def test_impossible_and_out_of_period_dates_are_flagged(tmp):
+    # the balances all chain, so only the date check can catch these
+    rows = [("01/02", "PAYROLL", 900.00), ("02/30", "NO SUCH DAY", -10.00), ("03/15", "WRONG MONTH", -5.00)]
+    res = read_statement(str(make_statement(tmp / "bad-dates.pdf", rows, opening=100.00)))
+    assert res.status == "unbalanced"
+    assert any("could not be read" in p for p in res.problems), res.problems
+    assert any("outside the statement period" in p for p in res.problems), res.problems

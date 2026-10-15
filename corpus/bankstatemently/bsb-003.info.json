@@ -1,0 +1,62 @@
+{
+  "id": "bsb-003",
+  "contentHash": "4945bcda107e6d7845850e728b90c4dba1cb11de5a13356b0794df349e5527c2",
+  "difficulty": "basic",
+  "documentType": "bank-statement",
+  "challenges": [
+    "posting-date-selection",
+    "separate-counterparty-column",
+    "balance-validation",
+    "currency-symbol-amounts",
+    "partial-year-dates"
+  ],
+  "bank": "continental-trust",
+  "country": "NL",
+  "currency": "EUR",
+  "language": "nl",
+  "languages": [
+    "nl",
+    "en"
+  ],
+  "pages": 3,
+  "transactionCount": 22,
+  "published": true,
+  "columns": [
+    {
+      "label": "Date",
+      "role": "date",
+      "alignment": "left"
+    },
+    {
+      "label": "Interest Date",
+      "role": "value_date",
+      "alignment": "left"
+    },
+    {
+      "label": "Counterparty",
+      "role": "counterparty",
+      "alignment": "left"
+    },
+    {
+      "label": "Description",
+      "role": "description",
+      "alignment": "left"
+    },
+    {
+      "label": "Amount",
+      "role": "signed",
+      "alignment": "right"
+    }
+  ],
+  "dateFormat": "D MMM",
+  "numberFormat": {
+    "decimalSeparator": ",",
+    "thousandsSeparator": ".",
+    "directionDerivation": "sign-derived",
+    "negativeSign": "leading-minus",
+    "signToDirectionMapping": "negative-is-debit",
+    "currencySymbol": "€",
+    "currencyPosition": "after"
+  },
+  "description": "European format with comma decimal separator and period thousands"
+}

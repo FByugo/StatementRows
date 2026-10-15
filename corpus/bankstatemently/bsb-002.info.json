@@ -1,0 +1,54 @@
+{
+  "id": "bsb-002",
+  "contentHash": "3700a073ac1262173cbabbd5667cd3a59e04cf0b14e3a865ae25ce21089ab97d",
+  "difficulty": "basic",
+  "documentType": "credit-card",
+  "challenges": [
+    "charges-shown-as-negative",
+    "posting-date-selection",
+    "transaction-continuation",
+    "non-standard-page-size",
+    "partial-year-dates"
+  ],
+  "bank": "liberty-national",
+  "country": "US",
+  "currency": "USD",
+  "language": "en",
+  "languages": [
+    "en"
+  ],
+  "pages": 4,
+  "transactionCount": 15,
+  "published": true,
+  "columns": [
+    {
+      "label": "Post Date",
+      "role": "value_date",
+      "alignment": "left"
+    },
+    {
+      "label": "Trans Date",
+      "role": "date",
+      "alignment": "left"
+    },
+    {
+      "label": "Merchant Name or Transaction Description",
+      "role": "description",
+      "alignment": "left"
+    },
+    {
+      "label": "$ Amount",
+      "role": "signed",
+      "alignment": "right"
+    }
+  ],
+  "dateFormat": "MM/DD",
+  "numberFormat": {
+    "decimalSeparator": ".",
+    "thousandsSeparator": ",",
+    "directionDerivation": "sign-derived",
+    "negativeSign": "leading-minus",
+    "signToDirectionMapping": "negative-is-debit"
+  },
+  "description": "US credit card with inverted signs, posting dates, and wrapped merchant descriptions"
+}

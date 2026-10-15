@@ -1,0 +1,56 @@
+{
+  "id": "bsb-004",
+  "contentHash": "67a5b862696fc06e675db53867be6fcc71a4ecc13998193e8b45e2cd63371051",
+  "difficulty": "basic",
+  "documentType": "bank-statement",
+  "challenges": [
+    "credit-debit-columns",
+    "multi-line-descriptions",
+    "balance-validation",
+    "multiple-accounts-multiple-tables"
+  ],
+  "bank": "silk-road",
+  "country": "HK",
+  "currency": "HKD",
+  "language": "en",
+  "languages": [
+    "en"
+  ],
+  "pages": 5,
+  "transactionCount": 25,
+  "published": true,
+  "columns": [
+    {
+      "label": "Date\n日期",
+      "role": "date",
+      "alignment": "left"
+    },
+    {
+      "label": "Transaction Details\n進支詳情",
+      "role": "description",
+      "alignment": "left"
+    },
+    {
+      "label": "Deposit\n存入",
+      "role": "credit",
+      "alignment": "right"
+    },
+    {
+      "label": "Withdrawal\n提取",
+      "role": "debit",
+      "alignment": "right"
+    },
+    {
+      "label": "Balance\n結餘",
+      "role": "balance",
+      "alignment": "right"
+    }
+  ],
+  "dateFormat": "D MMM",
+  "numberFormat": {
+    "decimalSeparator": ".",
+    "thousandsSeparator": ",",
+    "directionDerivation": "separate-columns"
+  },
+  "description": "Hong Kong bank statement with separate account tables, credit/debit columns, multi-line descriptions, and value date"
+}

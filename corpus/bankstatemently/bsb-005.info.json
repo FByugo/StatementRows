@@ -1,0 +1,56 @@
+{
+  "id": "bsb-005",
+  "contentHash": "a5cc2a7d210bc657c55b44ac159c5d10b2d71553f3646ce17a64051f918fd960",
+  "difficulty": "basic",
+  "documentType": "bank-statement",
+  "challenges": [
+    "split-embedded-date-column",
+    "credit-debit-columns",
+    "two-digit-year-dates",
+    "date-format-variations",
+    "balance-validation"
+  ],
+  "bank": "harbour-bank",
+  "country": "CA",
+  "currency": "CAD",
+  "language": "fr",
+  "languages": [
+    "fr"
+  ],
+  "pages": 2,
+  "transactionCount": 25,
+  "published": true,
+  "columns": [
+    {
+      "label": "Détails",
+      "role": "description",
+      "alignment": "left"
+    },
+    {
+      "label": "Chèques et débits ($)",
+      "role": "debit",
+      "alignment": "right"
+    },
+    {
+      "label": "Dépôts et crédits ($)",
+      "role": "credit",
+      "alignment": "right"
+    },
+    {
+      "label": "Solde ($)",
+      "role": "balance",
+      "alignment": "right"
+    }
+  ],
+  "dateFormat": "DD MMM YY",
+  "numberFormat": {
+    "decimalSeparator": ",",
+    "thousandsSeparator": " ",
+    "directionDerivation": "sign-derived",
+    "negativeSign": "leading-minus",
+    "signToDirectionMapping": "negative-is-debit",
+    "currencySymbol": "$",
+    "currencyPosition": "after"
+  },
+  "description": "French Canadian bank statement with dates embedded in description, two-digit years, credit-debit columns, and space thousands separator"
+}
