@@ -278,3 +278,13 @@ def test_combined_workbook_one_sheet_per_statement(tmp):
     wb = openpyxl.load_workbook(tmp / "o" / "all statements.xlsx")
     assert wb.sheetnames == ["Summary", "feb", "jan"]
     assert wb["jan"].max_row == len(ROWS) + 1
+
+
+@pytest.mark.skipif(not (LOCAL / "carsonbank-sample.pdf").exists(), reason="local-only sample")
+def test_summary_counts_that_disagree_with_the_rows():
+    # Carson Bank's sample: rows chain, but its summary counts 10 deposits and 54 debits
+    res = read_statement(str(LOCAL / "carsonbank-sample.pdf"))
+    assert all(t.check == "ok" for t in res.txns[1:])
+    assert {t.date.month for t in res.txns} == {7}        # an amount once flipped the whole file to day-first
+    assert res.opening == Decimal("3005.93")
+    assert any("the statement says 54" in p for p in res.problems)

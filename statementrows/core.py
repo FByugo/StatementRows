@@ -261,11 +261,13 @@ def leading_dates(text: str) -> tuple[list[RawDate], int]:
 
 
 def _dates_from(text: str, pos: int) -> tuple[list[RawDate], int]:
-    found = []
+    found: list[RawDate] = []
     for _ in range(2):
         rd = match_date_at(text, pos)
         if not rd:
             break
+        if found and not re.match(r"\s*(?:\d{1,2}:\d{2}\S*\s*)?[^\W\d_]", text[rd.end:]):
+            break          # a second 'date' with only numbers after it is an amount: 07/22/2019  26.08 -
         found.append(rd)
         pos = rd.end
         # a time printed after a date belongs to it: 01/01/2024 12:12:52 PM
@@ -306,10 +308,10 @@ def resolve(rd: RawDate, order: str, end: date | None) -> date | None:
 
 def pick_order(raws: list[RawDate], hint_us: bool) -> str:
     nums = [(int(r.parts["a"]), int(r.parts["b"])) for r in raws if r.kind in ("num3", "num2")]
-    if any(a > 12 for a, _ in nums):
-        return "dmy"
-    if any(b > 12 for _, b in nums):
-        return "mdy"
+    day_first = sum(1 for a, _ in nums if a > 12)
+    month_first = sum(1 for _, b in nums if b > 12)
+    if day_first != month_first:          # a vote, so one misread amount cannot flip a whole document
+        return "dmy" if day_first > month_first else "mdy"
     if len(nums) >= 3:
         def drops(order):
             seq = [(b, a) if order == "dmy" else (a, b) for a, b in nums]
@@ -456,9 +458,24 @@ def _has_words(line: Line, words) -> bool:
     return any(w in low for w in words)
 
 
-def _summary_amount(line: Line, loc: Locale) -> Decimal | None:
-    vals = [v for _, v, _, _ in _amounts(line, loc, 0)]
-    return vals[-1] if vals else None
+def _summary_amount(line: Line, loc: Locale, words=OPENING_WORDS + CLOSING_WORDS) -> Decimal | None:
+    """The balance on a summary line.
+    'Previous balance 06/28/2019 $3,005.93  $14,365.21'   -> 3,005.93 (first after the label)
+    'Balance Carried Forward: 2,181.67 2,002.15 15,271.23' -> 15,271.23 (debits, credits, then balance)
+    '12/01/19  9,673.85 Beginning Balance'                 -> 9,673.85 (nothing after the label)"""
+    low = line.text.lower()
+    hits = [(low.find(w), low.find(w) + len(w)) for w in words if w in low]
+    if not hits:
+        vals = [v for _, v, _, _ in _amounts(line, loc, 0)]
+        return vals[-1] if vals else None
+    k0, k1 = min(hits)
+    after = [v for _, v, _, _ in _amounts(line, loc, k1)]
+    if len(after) >= 3:
+        return after[-1]
+    if after:
+        return after[0]
+    before = [v for m, v, _, _ in _amounts(line, loc, 0) if m.end() <= k0]
+    return before[-1] if before else None
 
 
 def read_statement(path: str) -> Result:
@@ -531,9 +548,9 @@ def read_statement(path: str) -> Result:
                 break
             continue
         if _has_words(l, OPENING_WORDS) and res.opening is None:
-            res.opening = _summary_amount(l, loc)
+            res.opening = _summary_amount(l, loc, OPENING_WORDS)
         elif _has_words(l, CLOSING_WORDS) and res.closing is None:
-            res.closing = _summary_amount(l, loc)
+            res.closing = _summary_amount(l, loc, CLOSING_WORDS)
         elif re.search(r"\bbalance (as of|at|on)\b|\bsaldo (per|op)\b", l.text.lower()):
             v = _summary_amount(l, loc)
             m = re.search(r"(?:as of|at|on|per|op)\s+(.+?)[:\s]", l.text, re.I)
@@ -616,7 +633,16 @@ def read_statement(path: str) -> Result:
             for back in reversed(lines[max(0, i - 6): i]):
                 if back.page == l.page and ACCOUNT_RE.search(back.text):
                     name = re.sub(r"\s*\((continued|suite|cont\.?)\)\s*$", "", back.text.strip(), flags=re.I)
-                    account = re.sub(r"\s{2,}", " ", name)
+                    name = re.sub(r"\s{2,}", " ", name)
+                    if account == "" and any(t.account == "" for t in res.txns):
+                        # the account's name was only printed on a later page: it is the same account
+                        for t in res.txns:
+                            if t.account == "":
+                                t.account = name
+                        if "" in account_open:
+                            account_open[name] = account_open.pop("")
+                        totals[:] = [(name if a == "" else a, r, v, n) for a, r, v, n in totals]
+                    account = name
                     break
             lt = l.text.lower()
             second_is_trans = "trans" in lt and lt.find("trans") > lt.find("date") >= 0
@@ -828,10 +854,11 @@ def _check_dates(res: Result) -> None:
 
 ACCOUNT_RE = re.compile(r"(account|compte|cuenta|rekening|konto)\b.*\d{3,}|^\s*\d{2,4}:\s+\S", re.I)
 TOTAL_RE = re.compile(
-    r"(?:\btotal\s+(?:no\.?\s+of\s+)?|^\s*(?P<n>\d{1,4})\s+)"
+    r"(?:\btotal\s+(?:no\.?\s+of\s+)?|^\s*(?P<n>\d{1,4})\s+|^\s*(?=(?:deposits?|checks?|withdrawals?)\s*/))"
     r"(?:(?P<cr>deposits?(?:\s*/\s*credits?)?|credits?|crédits?|dépôts?(?: et crédits)?|money in|paid in|incoming|abonos?)"
-    r"|(?P<dr>withdrawals?|checks?\s*/\s*debits?|cheques?\s*/\s*debits?|debits?|débits?|money out|paid out|outgoing|cargos?|retraits?))"
-    r"(?:\s+amount)?(?:\s*\((?P<n2>\d{1,4})\))?", re.I)
+    r"|(?P<dr>withdrawals?|checks?\s*/\s*(?:debits?|withdrawals?)|cheques?\s*/\s*debits?|debits?|débits?|money out"
+    r"|paid out|outgoing|cargos?|retraits?))"
+    r"(?:\s+amount)?(?:\s*\((?P<n2>\d{1,4})\)|\s+(?P<n3>\d{1,4})(?=\s+\S*\d[.,]\d{2}))?", re.I)
 
 
 def section_totals(line: Line, loc: Locale):
@@ -840,7 +867,7 @@ def section_totals(line: Line, loc: Locale):
     hits = list(TOTAL_RE.finditer(line.text))
     for k, m in enumerate(hits):
         stop = hits[k + 1].start() if k + 1 < len(hits) else len(line.text)
-        n = m.group("n") or m.group("n2")
+        n = m.group("n") or m.group("n2") or m.group("n3")
         for mm in loc.money.finditer(line.text[:stop], m.end()):
             yield ("credit" if m.group("cr") else "debit"), abs(loc.value(mm)), (int(n) if n else None)
             break
