@@ -78,3 +78,22 @@ Each one varies column layout (one amount column or debit and credit columns), d
 - After the fix, the same 150: 145 exact. A fresh 150 (different seed): 147 exact.
 - Every remaining miss is a long description printed over the amount column, which hides the amount. Each of those comes back `unbalanced` with the row named, never `ok`.
 - `test_random_statements_are_never_ok_and_wrong` runs 30 of these on every check. It fails if any comes back `ok` while wrong, and it caught the mutant with both fixes removed.
+
+## Adversarial review (45 statements built to break it)
+
+A separate review read the code and built 45 statements aimed at its rules. Each one carries the correct answer. All 45 are now in `tests/redteam/` and run on every check.
+
+- **Before the fixes:** 11 came back `ok` (or with a passing check) while wrong. Two words like "credit card" and "Apr" on a checking statement reversed every sign. A promotion ending in 2028 moved every row to 2028. A sentence about overdraft protection was read as a column header and the rows after it vanished. A two-line Wells Fargo header lost the balance column without a word. A figure contradicting its own column was corrected silently. 9 correct statements were refused or marked unbalanced. There were 0 crashes.
+- **What changed:**
+  - A card is now known by its structure (a minimum payment beside a new balance), not by vocabulary.
+  - Each row records where its sign came from, so a section heading never overrides a printed minus.
+  - The statement date is the one the rows agree with, and the period comes from a labelled line that isn't a transaction.
+  - A sentence is never a header, and two-line headers are merged.
+  - A balance column that can't be read is reported.
+  - Contradictions are reported instead of fixed.
+  - Totals are compared with the rows under their own heading.
+  - Rows carry on across page breaks.
+  - Number-first check lists, lakh grouping, OD suffixes and rotated pages are read.
+  - A statement whose first row can't be checked says `partly_checked`.
+- **After:** all 45 give the correct answer. One of them (the "Payment" column file) contradicts itself, because its builder printed −200.00 as 200.00. The tool names exactly that row, and that complaint is the correct answer.
+- **Unchanged through all of it:** the 20-statement holdout stays at 3,251/3,251 exact on date, amount and balance, and descriptions went from 3,072 to 3,077.

@@ -76,3 +76,15 @@ def test_card_with_two_dates_and_credits_marked_minus_dollar(tmp_path):
     assert res.kind == "card"
     assert [float(t.amount) for t in res.txns] == [-6.75, 500.00, -121.99, -11.99, 11.98]
     assert res.txns[0].date == date(2026, 1, 5) and res.txns[0].date_2 == date(2026, 1, 6)
+
+
+def test_unknown_opening_label_is_never_ok(tmp_path):
+    # the first row could be missing and nothing would show it: say so instead of 'ok'
+    rows = [(13, [(40, "Kontostand am Anfang des Zeitraums", "l"), (300, "1,000.00", "r")]),
+            (20, [(40, "Statement period 01/01/2026 - 01/31/2026", "l")]),
+            (13, [(40, "Date", "l"), (90, "Description", "l"), (460, "Amount", "r"), (550, "Balance", "r")]),
+            (13, [(40, "01/03", "l"), (90, "RENT JANUARY", "l"), (460, "-1,200.00", "r"), (550, "2,300.00", "r")]),
+            (13, [(40, "01/05", "l"), (90, "GROCERY STORE", "l"), (460, "-86.42", "r"), (550, "2,213.58", "r")])]
+    res = read_statement(str(draw(tmp_path / "u.pdf", rows)))
+    assert res.status == "partly_checked"
+    assert any("opening balance not found" in p for p in res.problems)

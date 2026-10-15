@@ -1381,6 +1381,7 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
                           + (f" ({unc} first row(s) of an account had nothing above to check against)" if unc else ""))
         if res.closing is None and len(accounts) == 1:
             res.closing = has_bal[-1].balance
+            res.checks.append("closing balance: none printed, so the last row's balance is used")
     for acct, close in account_close.items():
         rows = [t for t in txns if t.account == acct and t.balance is not None]
         if rows and rows[-1].balance == close:
@@ -1432,8 +1433,15 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
                 gap = f"{gap}; they add up only with every sign reversed, so a sign was misread"
             res.problems.append(f"totals: opening {res.opening} plus the rows does not reach closing {res.closing} (off by {gap})")
             breaks += 1
+    partial = (has_bal and res.opening is None and not account_open
+               and not any("add up to the printed total" in c for c in res.checks))
+    if partial:
+        res.problems.append("opening balance not found: the first row, and any row missing before it, "
+                            "cannot be checked")
     if breaks:
         res.status = "unbalanced"
+    elif partial:
+        res.status = "partly_checked"
     elif not res.checks:
         res.status = "unchecked"
         res.problems.append("no balance or totals printed, nothing to check the rows against")
