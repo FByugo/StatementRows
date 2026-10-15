@@ -69,6 +69,9 @@ class Txn:
     raw_date: str = ""
     date_2: date | None = None
     account: str = ""
+    note: str = ""
+    ref: str = ""                # cheque number, branch code or reference printed in its own column
+    parts: list = field(default_factory=list, repr=False)   # the description, one entry per printed line
     check: str = ""              # "ok", "break", or "" when there is nothing to check against
 
     @property
@@ -177,7 +180,7 @@ class Locale:
         self.decimal = decimal
         th = r"[,'’]" if decimal == "." else r"[ .  '’]"
         d = re.escape(decimal)
-        cur = r"(?:[$€£¥]|[A-Z]{3}\s?(?=[\d\-−]))"
+        cur = r"(?:[$€£¥₹]|Rs\.?|[A-Z]{3}\s?(?=[\d\-−]))"
         self.money = re.compile(
             rf"(?<![\w.,/:])(?P<pre>[-+−]\s?)?(?P<c1>{cur}\s?)?(?P<pre2>[-+−])?"
             rf"(?P<num>\(?\d{{1,3}}(?:{th}\d{{3}})*{d}\d{{2}}\)?|\(?\d+{d}\d{{2}}\)?)"
@@ -242,14 +245,32 @@ def match_date_at(text: str, pos: int) -> RawDate | None:
 
 
 def leading_dates(text: str) -> tuple[list[RawDate], int]:
-    """Dates at the very start of a line, up to two (posting and transaction)."""
-    found, pos = [], len(text) - len(text.lstrip())
+    """Dates at the start of a line, up to two (posting and transaction). A serial number and a
+    transaction id may come first ('12  S8559  06/01/2024 ...'); they are skipped."""
+    start = len(text) - len(text.lstrip())
+    for skip in range(3):
+        found, pos = _dates_from(text, start)
+        if found:
+            return found, pos
+        m = re.match(r"[A-Za-z]{0,3}\d[\w\-/]{0,15}\s+", text[start:])
+        if not m:
+            break
+        start += m.end()
+    return [], len(text) - len(text.lstrip())
+
+
+def _dates_from(text: str, pos: int) -> tuple[list[RawDate], int]:
+    found = []
     for _ in range(2):
         rd = match_date_at(text, pos)
         if not rd:
             break
         found.append(rd)
         pos = rd.end
+        # a time printed after a date belongs to it: 01/01/2024 12:12:52 PM
+        t = re.match(r"\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AaPp][Mm])?", text[pos:])
+        if t:
+            pos += t.end()
         while pos < len(text) and text[pos] == " ":
             pos += 1
     return found, pos
@@ -389,6 +410,31 @@ def find_header(lines: list[Line], i: int) -> list[Col] | None:
     return cols
 
 
+DESC_WORDS = ("description", "descriptions", "details", "detail", "particulars", "narration", "narrative",
+              "merchant", "transaction", "payee", "memo", "libellé", "libelle", "détails", "omschrijving",
+              "descripción", "descripcion", "concepto", "beschreibung", "verwendungszweck", "remarks",
+              "counterparty", "beneficiary", "tegenpartij", "naam")
+
+
+def header_desc_span(line: Line) -> tuple[float, float] | None:
+    """The description column, judged from the header: it starts where the header word before it
+    ends (headers are often centred over a wide column) and stops halfway to the next header word."""
+    words = [(m.group(0), *line.span(m.start(), m.end())) for m in re.finditer(r"\S+", line.text)]
+    first = last = None
+    for k, (w, a, b) in enumerate(words):
+        lw = w.lower().strip("():.")
+        if lw in DESC_WORDS or (first is not None and lw in ("name", "or", "of", "and", "/", "&")):
+            first = k if first is None else first
+            last = k
+        elif first is not None:
+            break
+    if first is None:
+        return None
+    lo = words[first - 1][2] + 0.5 if first > 0 else -1e9
+    hi = words[last + 1][1] - 3 if last + 1 < len(words) else 1e9
+    return lo, hi
+
+
 # ---------------------------------------------------------------- reading one statement
 
 def _assign(cols: list[Col], x1: float) -> Col | None:
@@ -514,17 +560,41 @@ def read_statement(path: str) -> Result:
     desc_x: float | None = None
     last_page = 0
     cur_top = 0.0
+    hdr_desc: tuple[float, float] | None = None
 
-    def part(line: Line) -> str:
-        # only the text left of the money columns belongs to the description
-        limit = min(c.x0 for c in cols) - 2 if cols else 1e9
-        return "".join(ch for ch, (a, _) in zip(line.text, line.xs) if a < limit).strip()
+    def bounds() -> tuple[float, float]:
+        hi = min(c.x0 for c in cols) - 2 if cols else 1e9
+        if hdr_desc:
+            return hdr_desc[0], min(hi, hdr_desc[1])
+        return (desc_x - 3 if desc_x is not None else -1e9), hi
+
+    def part(line: Line, start: int = 0, stop: int | None = None) -> str:
+        # only the text inside the description column belongs to the description
+        return part_x(line, start, stop)[0]
+
+    def part_x(line: Line, start: int = 0, stop: int | None = None) -> tuple[str, float, float]:
+        """The description text on a line, where it ends, and the width of one of its characters."""
+        lo, hi = bounds()
+        stop = len(line.text) if stop is None else stop
+        kept = [(w, a, e) for w, a, e in _words(line, start, stop, ends=True) if lo <= a < hi]
+        if not kept:
+            return "", 0.0, 0.0
+        text = " ".join(w for w, _, _ in kept)
+        span = kept[-1][2] - kept[-1][1]
+        return text, kept[-1][2], span / max(1, len(kept[-1][0]))
+
+    def outside(line: Line, start: int, stop: int) -> str:
+        # text in this row that sits in some other non-money column: cheque numbers, branch codes
+        lo, hi = bounds()
+        return " ".join(w for w, a in _words(line, start, stop) if not (lo <= a < hi))
 
     def flush(to: Txn | None, items: list[Line]):
         if to is None:
             return
         for b in items:
-            to.description = (to.description + " " + part(b)).strip()
+            p_ = part_x(b)
+            if p_[0]:
+                to.parts.append(p_)
 
     for i, l in enumerate(lines):
         if l.page != last_page:
@@ -533,6 +603,7 @@ def read_statement(path: str) -> Result:
         if h:
             flush(cur, buf); buf = []
             cols, cur = h, None
+            hdr_desc = header_desc_span(l)
             for back in (lines[i - 1], lines[i - 2]) if i >= 2 else ():
                 if back.page == l.page and ACCOUNT_RE.search(back.text):
                     name = re.sub(r"\s*\((continued|suite|cont\.?)\)\s*$", "", back.text.strip(), flags=re.I)
@@ -560,32 +631,63 @@ def read_statement(path: str) -> Result:
                     amt = abs(v) if amt is None else amt
                 else:
                     amt = v if amt is None else amt
+            if amt is not None and all(c.role != "debit" and c.role != "credit" for c, *_ in placed):
+                first_a = min(a for _, _, a, _ in placed)
+                mark = re.findall(r"(?<![\w/])(CR|DR|Cr|Dr|C|D)(?![\w/])",
+                                  " ".join(w for w, a in _words(l, pos, _char_at(l, first_a))))
+                if mark:
+                    amt = abs(amt) if mark[-1].upper().startswith("C") else -abs(amt)
+            note = ""
+            if amt is None and bal is not None and not _has_words(l, OPENING_WORDS + CLOSING_WORDS) \
+                    and re.search(r"[A-Za-z]{3}", l.text[pos:_char_at(l, min(a for _, _, a, _ in placed))]):
+                # a described row with a balance and no amount: a failed or informational entry.
+                # Kept as 0.00 so it is not silently lost.
+                amt, note = Decimal(0), "no amount printed"
             if amt is None or _has_words(l, OPENING_WORDS):
                 # a dated line carrying only a balance is a balance row, not a transaction
                 if bal is not None and _has_words(l, OPENING_WORDS) and res.opening is None:
                     res.opening = bal
                 continue
             first_amt = min(a for _, _, a, _ in placed)
-            desc = l.text[pos: _char_at(l, first_amt)].strip()
+            cut = _char_at(l, first_amt)
             if desc_x is None:
                 desc_x = l.xs[pos][0] if pos < len(l.xs) else l.x0
-            cand = [b for b in buf if b.x0 >= desc_x - 3]
+            desc_px = part_x(l, pos, cut)
+            desc = desc_px[0]
+            ref = outside(l, pos, cut)
+            ref = re.sub(r"(?<![\w/])(CR|DR|Cr|Dr)(?![\w/])", "", ref).strip()
+            skipped = l.text[: len(l.text) - len(l.text.lstrip())]
+            lead = l.text[len(skipped): l.text.find(ds[0].text, len(skipped))].strip() if ds else ""
+            if lead:
+                ref = (lead + " " + ref).strip()
+            if not desc and re.search(r"[A-Za-z]{3}", ref):
+                desc, ref = ref, ""          # the header was not where the text is; keep the text
+                desc_px = (desc, 0.0, 0.0)
+            cand = [b for b in buf if part(b)]
             if pre_k is None:
                 pre_k = len(cand) if not res.txns else 0
             k = min(pre_k, len(cand))
+            if cand and not pre_k and cur is not None and cur.page == l.page:
+                # lines sitting closer to this row than to the one above belong to this row
+                gap_above = l.top - cur_top
+                near = sum(1 for b in cand if (l.top - b.top) < (b.top - cur_top) - 0.15 * gap_above)
+                k = max(k, near)
             if not desc and cand:
                 # nothing printed beside the date: the row's text sits just above it, so take the
                 # lines that are closer to this date line than to the row above
                 prev_top = cur_top if (cur is not None and cur.page == l.page) else -1e9
                 k = max(k, sum(1 for b in cand if (l.top - b.top) < (b.top - prev_top)))
             flush(cur, cand[: len(cand) - k])
-            above = " ".join(part(b) for b in cand[len(cand) - k:])
+            above = [part_x(b) for b in cand[len(cand) - k:]]
             buf = []
             d1 = resolve(ds[0], order, end)
             d2 = resolve(ds[1], order, end) if len(ds) > 1 else None
-            cur = Txn(d2 if (second_is_trans and d2) else d1, (above + " " + desc).strip(), amt, bal, l.page,
+            cur = Txn(d2 if (second_is_trans and d2) else d1, "", amt, bal, l.page,
                       raw_date=" ".join(r.text for r in ds), date_2=d1 if (second_is_trans and d2) else d2,
                       account=account)
+            cur.note = note
+            cur.ref = ref
+            cur.parts = [x for x in above + [desc_px] if x[0]]
             res.txns.append(cur)
             cur_top = l.top
             continue
@@ -614,8 +716,7 @@ def read_statement(path: str) -> Result:
             buf.append(l)
     flush(cur, buf)
 
-    for t in res.txns:
-        t.description = re.sub(r"\s{2,}", " ", t.description)
+    _join_descriptions(res.txns)
     if not res.txns:
         res.status = "no_table"
         if image_pages:
@@ -703,6 +804,33 @@ def section_totals(line: Line, loc: Locale):
         for mm in loc.money.finditer(line.text[:stop], m.end()):
             yield ("credit" if m.group("cr") else "debit"), abs(loc.value(mm)), (int(n) if n else None)
             break
+
+
+def _join_descriptions(txns: list[Txn]) -> None:
+    """Join each row's description lines. Some statements break a long word across two lines;
+    such a line runs to the very edge of the column, so a line ending within a character of the
+    furthest edge seen is glued to the next without a space."""
+    ends = [(e, w) for t in txns for _, e, w in t.parts[:-1] if e]
+    edge = max(e for e, _ in ends) if len(ends) >= 5 else None
+    if edge is not None and sum(1 for e, w in ends if e >= edge - 0.6 * (w or 5)) < 3:
+        edge = None                   # one long line is not a column edge; several reaching it are
+    for t in txns:
+        out = ""
+        for k, (p, _, _) in enumerate(t.parts):
+            prev = t.parts[k - 1] if k else None
+            if not out:
+                out = p
+            elif edge and prev[1] >= edge - 0.6 * (prev[2] or 5) and out[-1].isalnum() and p[0].isalnum():
+                out += p
+            else:
+                out += " " + p
+        t.description = re.sub(r"\s{2,}", " ", out).strip()
+
+
+def _words(line: Line, start: int, stop: int, ends: bool = False):
+    for m in re.finditer(r"\S+", line.text[start:stop]):
+        a = line.xs[start + m.start()][0]
+        yield (m.group(0), a, line.xs[start + m.end() - 1][1]) if ends else (m.group(0), a)
 
 
 def _char_at(line: Line, x: float) -> int:

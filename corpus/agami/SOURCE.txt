@@ -1,0 +1,2 @@
+Source: https://huggingface.co/datasets/AgamiAI/Indian-Bank-Statements
+License: Apache-2.0. Synthetic statements with answer files. Note: the answer files themselves do not chain at a few rows; the tests expect the tool to flag exactly those rows.

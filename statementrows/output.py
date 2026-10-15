@@ -11,7 +11,7 @@ from openpyxl.styles import Font, PatternFill
 
 from .core import Result
 
-COLUMNS = ["date", "description", "amount", "direction", "balance", "check", "account", "page", "date_2"]
+COLUMNS = ["date", "description", "amount", "direction", "balance", "check", "account", "page", "date_2", "note", "ref"]
 
 
 def rows(res: Result) -> list[dict]:
@@ -25,6 +25,8 @@ def rows(res: Result) -> list[dict]:
         "account": t.account,
         "page": t.page,
         "date_2": t.date_2.isoformat() if t.date_2 else "",
+        "note": t.note,
+        "ref": t.ref,
     } for t in res.txns]
 
 
@@ -68,7 +70,8 @@ def write_xlsx(res: Result, path: Path) -> None:
     bad = PatternFill("solid", fgColor="F8D7DA")
     for t in res.txns:
         ws.append([t.date, t.description, float(t.amount), t.direction,
-                   float(t.balance) if t.balance is not None else None, t.check, t.account, t.page, t.date_2])
+                   float(t.balance) if t.balance is not None else None, t.check, t.account, t.page, t.date_2,
+                   t.note, t.ref])
         r = ws.max_row
         ws.cell(r, 1).number_format = "yyyy-mm-dd"
         ws.cell(r, 9).number_format = "yyyy-mm-dd"
@@ -77,7 +80,7 @@ def write_xlsx(res: Result, path: Path) -> None:
         if t.check == "break" or t.date is None:
             for c in ws[r]:
                 c.fill = bad
-    widths = {"A": 12, "B": 60, "C": 13, "D": 10, "E": 14, "F": 24, "G": 30, "H": 6, "I": 12}
+    widths = {"A": 12, "B": 60, "C": 13, "D": 10, "E": 14, "F": 24, "G": 30, "H": 6, "I": 12, "J": 20, "K": 16}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"

@@ -189,3 +189,45 @@ def test_impossible_and_out_of_period_dates_are_flagged(tmp):
     assert res.status == "unbalanced"
     assert any("could not be read" in p for p in res.problems), res.problems
     assert any("outside the statement period" in p for p in res.problems), res.problems
+
+
+# ---------------------------------------------------------------- AgamiAI Indian bank statements (Apache-2.0)
+
+def _agami_truth(path):
+    j = json.loads(path.read_text())
+    rows = []
+    for t in j["transactions"]:
+        if "credit" in t:
+            amt = Decimal(str(t["credit"] or 0)) - Decimal(str(t["debit"] or 0))
+            bal, d = t["balance"], t["date"][:10]
+        else:
+            a = Decimal(str(t["transaction_amount"] or 0))
+            amt = a if (t["cr_dr"] or "").upper() == "CR" else -a
+            bal, d = t["available_balance"], t["date"][6:10] + "-" + t["date"][3:5] + "-" + t["date"][:2]
+        rows.append((d, amt, Decimal(str(bal)), t["description"]))
+    breaks, prev = [], Decimal(str(j["opening_balance"]))
+    for k, (_, amt, bal, _) in enumerate(rows):
+        if abs(prev + amt - bal) >= Decimal("0.01"):
+            breaks.append(k + 1)
+        prev = bal
+    return rows, breaks
+
+
+AGAMI = sorted((CORPUS / "agami").glob("Digital_*.pdf"))
+
+
+@pytest.mark.parametrize("pdf", AGAMI, ids=lambda p: p.stem)
+def test_agami_numbers_exact_and_its_own_breaks_found(pdf):
+    truth, truth_breaks = _agami_truth(pdf.with_suffix(".json"))
+    res = read_statement(str(pdf))
+    assert len(res.txns) == len(truth)
+    for t, (d, amt, bal, _) in zip(res.txns, truth):
+        assert (t.date.isoformat(), t.amount, t.balance) == (d, amt, bal)
+    # the dataset's printed balances skip at a few rows; the tool must name exactly those
+    assert [k + 1 for k, t in enumerate(res.txns) if t.check == "break"] == truth_breaks
+    same = sum(1 for t, (_, _, _, desc) in zip(res.txns, truth) if t.description == desc)
+    assert same >= 0.85 * len(truth), f"descriptions {same}/{len(truth)}"
+
+
+def test_agami_scan_is_reported_not_guessed():
+    assert read_statement(str(CORPUS / "agami" / "Scanned_Type1_00001.pdf")).status == "needs_ocr"
