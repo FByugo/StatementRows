@@ -318,3 +318,23 @@ def test_a_section_total_that_does_not_match(tmp):
                                             checks=CHK, wrong_total=9.99)))
     assert res.status == "unbalanced"
     assert any("statement prints 1341.41" in p for p in res.problems), res.problems
+
+
+def test_balance_printed_once_a_day(tmp):
+    rows = [("01/02", "PAYROLL ACME CO", 2500.00), ("01/02", "COFFEE SHOP", -4.50), ("01/02", "GROCERY STORE", -60.25),
+            ("01/05", "RENT JANUARY", -1200.00), ("01/07", "GAS STATION", -38.10), ("01/07", "PHARMACY", -12.99)]
+    bal, daily = 1000.00, []
+    for k, (d, _, a) in enumerate(rows):
+        bal = round(bal + a, 2)
+        last_of_day = k + 1 == len(rows) or rows[k + 1][0] != d
+        daily.append(bal if last_of_day else None)
+    hdr = ("Date", "Description", "Withdrawals/ Subtractions", "Deposits/ Additions", "Ending daily balance")
+    res = read_statement(str(make_statement(tmp / "wf.pdf", rows, opening=1000.00, balances=daily, header=hdr,
+                                            closing=bal)))
+    assert res.status == "ok", res.problems
+    assert [t.check for t in res.txns].count("ok (balance printed once for the day)") == 3
+    daily[2] = round(daily[2] + 5, 2)      # one day's printed balance is wrong
+    res = read_statement(str(make_statement(tmp / "wf2.pdf", rows, opening=1000.00, balances=daily, header=hdr,
+                                            closing=bal)))
+    assert res.status == "unbalanced"
+    assert any("row(s) above it without a balance" in p or "is off by 5.00" in p for p in res.problems), res.problems

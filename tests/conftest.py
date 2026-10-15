@@ -64,7 +64,8 @@ def make_statement(path: Path, rows, *, opening: float, closing: float | None = 
             c.drawRightString(x, y, fmt(abs(amt), style) if style == "plain" else fmt(abs(amt)))
         else:
             c.drawRightString(460, y, fmt(amt, style))
-        c.drawRightString(550, y, fmt(b))
+        if b is not None:
+            c.drawRightString(550, y, fmt(b))
         y -= 13
         if desc_below and k in desc_below:
             c.drawString(110, y, desc_below[k]); y -= 13

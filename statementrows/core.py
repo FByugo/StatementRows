@@ -307,6 +307,15 @@ def resolve(rd: RawDate, order: str, end: date | None) -> date | None:
         return None
 
 
+def _decisive(raws: list[RawDate]) -> str | None:
+    nums = [(int(r.parts["a"]), int(r.parts["b"])) for r in raws if r.kind in ("num3", "num2")]
+    day_first = sum(1 for a, _ in nums if a > 12)
+    month_first = sum(1 for _, b in nums if b > 12)
+    if day_first != month_first:
+        return "dmy" if day_first > month_first else "mdy"
+    return None
+
+
 def pick_order(raws: list[RawDate], hint_us: bool) -> str:
     nums = [(int(r.parts["a"]), int(r.parts["b"])) for r in raws if r.kind in ("num3", "num2")]
     day_first = sum(1 for a, _ in nums if a > 12)
@@ -519,12 +528,11 @@ def read_statement(path: str) -> Result:
         # only lines that look like transactions vote on day/month order, not calendars or footers
         if ds and any(True for _ in _amounts(l, loc, pos)):
             raws += ds
-    order = pick_order(raws, hint_us)
-    if not any(r.kind in ("num3", "num2") for r in raws):
-        # the rows print month names; let any numeric date elsewhere settle day/month order
-        every = [RawDate("num3", m.groupdict(), m.end(), m.group(0))
-                 for l in lines for m in DATE_PATTERNS[1][1].finditer(l.text)]
-        order = pick_order(every, hint_us)
+    # day/month order: the rows vote first; if they cannot decide (01/02 reads either way),
+    # every full date printed anywhere votes, then the order the rows run in, then the currency
+    every = [RawDate("num3", m.groupdict(), m.end(), m.group(0))
+             for l in lines for m in DATE_PATTERNS[1][1].finditer(l.text)]
+    order = _decisive(raws) or _decisive(every) or pick_order(raws or every, hint_us)
     end = statement_end(lines, order)
 
     # summary figures, read from anywhere in the document
@@ -1003,54 +1011,68 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
     breaks = 0
     if has_bal:
         # card balances count money owed, so a purchase raises the balance
+        # rows of the table that carries the balances; other tables (checks lists) are not in the chain
+        chained = {(t.account, t.section) for t in has_bal}
+        in_chain = lambda t: (t.account, t.section) in chained
         sign = 1
         prev = res.opening
         votes = {1: 0, -1: 0}
-        p = res.opening
+        p, pend = res.opening, Decimal(0)
         for t in txns:
+            if not in_chain(t):
+                continue
             if t.balance is None:
+                pend += t.amount
                 continue
             if p is not None:
                 for s in (1, -1):
-                    if abs(p + s * t.amount - t.balance) < CENT:
+                    if abs(p + s * (pend + t.amount) - t.balance) < CENT:
                         votes[s] += 1
-            p = t.balance
+            p, pend = t.balance, Decimal(0)
         sign = 1 if votes[1] >= votes[-1] else -1
         acct = txns[0].account
         if acct in account_open:
             prev = account_open[acct]
+        pending: list[Txn] = []      # rows printed without a balance: some banks print one per day
         for k, t in enumerate(txns):
             if t.account != acct:
-                acct, prev = t.account, account_open.get(t.account)
-            if t.balance is None:
+                acct, prev, pending = t.account, account_open.get(t.account), []
+            if not in_chain(t):
                 continue
+            if t.balance is None:
+                pending.append(t)
+                continue
+            moved = sum((u.amount for u in pending), Decimal(0)) + t.amount
             if prev is None:
                 t.check = ""
-            elif abs(prev + sign * t.amount - t.balance) < CENT:
+            elif abs(prev + sign * moved - t.balance) < CENT:
                 t.check = "ok"
+                for u in pending:
+                    u.check = "ok (balance printed once for the day)"
             else:
                 # the column was misread but the balance moved by the same size: trust the balance
                 delta = (t.balance - prev) * sign
-                if abs(abs(delta) - abs(t.amount)) < CENT:
+                if not pending and abs(abs(delta) - abs(t.amount)) < CENT:
                     t.amount = delta
                     t.check = "ok (direction from balance)"
                 else:
                     t.check = "break"
                     breaks += 1
-                    expected = prev + sign * t.amount
+                    expected = prev + sign * moved
                     nxt = next((u for u in txns[k + 1:] if u.balance is not None and u.account == t.account), None)
-                    if nxt is not None and abs(expected + sign * nxt.amount - nxt.balance) < CENT:
+                    if not pending and nxt is not None and abs(expected + sign * nxt.amount - nxt.balance) < CENT:
                         # the next row agrees with the corrected figure: only this printed balance is wrong
                         res.problems.append(
                             f"row {k + 1} ({t.raw_date} {t.description[:40]}): the printed balance {t.balance} "
                             f"is off by {t.balance - expected}; it should be {expected}, and the next row agrees")
                         t.check = "break (printed balance)"
-                        prev = expected
+                        prev, pending = expected, []
                         continue
+                    span = f" and the {len(pending)} row(s) above it without a balance" if pending else ""
                     res.problems.append(
                         f"row {k + 1} ({t.raw_date} {t.description[:40]}): balance {t.balance} "
-                        f"does not follow from {prev} and {t.amount}")
-            prev = t.balance
+                        f"does not follow from {prev} and {t.amount}{span}")
+            prev, pending = t.balance, []
         okc = sum(1 for t in txns if t.check.startswith("ok"))
         unc = sum(1 for t in has_bal if not t.check)
         res.checks.append(f"running balance: {okc} of {len(has_bal)} rows follow from the row above"
