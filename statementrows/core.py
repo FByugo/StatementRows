@@ -17,19 +17,19 @@ from . import ocr as _ocr
 
 # ---------------------------------------------------------------- words we look for
 
-MONTHS = {
-    1: "jan janv janvier januari januar enero ene gen genn",
-    2: "feb fev fevr févr fevrier février februari februar febrero",
-    3: "mar mars maart marz märz marzo mrt mär",
-    4: "apr avr avril april abril abr",
+MONTHS = {   # English in full first: 'January' must not be read as 'Jan' followed by junk
+    1: "january jan janv janvier januari januar enero ene gen genn",
+    2: "february feb fev fevr févr fevrier février februari februar febrero",
+    3: "march mar mars maart marz märz marzo mrt mär",
+    4: "april apr avr avril abril abr",
     5: "may mai mei mayo",
-    6: "jun juin juni junio",
-    7: "jul juil juillet juli julio",
-    8: "aug aout août augustus agosto ago",
-    9: "sep sept septembre september septiembre set",
-    10: "oct octobre okt oktober octubre",
-    11: "nov novembre november noviembre",
-    12: "dec déc decembre décembre december dezember diciembre dic dez",
+    6: "june jun juin juni junio",
+    7: "july jul juil juillet juli julio",
+    8: "august aug aout août augustus agosto ago",
+    9: "september sep sept septembre septiembre set",
+    10: "october oct octobre okt oktober octubre",
+    11: "november nov novembre noviembre",
+    12: "december dec déc decembre décembre dezember diciembre dic dez",
 }
 MONTH_OF = {w: m for m, words in MONTHS.items() for w in words.split()}
 MONTH_RE = "|".join(sorted(MONTH_OF, key=len, reverse=True))
