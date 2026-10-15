@@ -863,8 +863,11 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     flush(cur, buf)
 
     _join_descriptions(res.txns)
-    if res.kind == "card" and len({t.account for t in res.txns}) > 1:
-        res.kind = "bank"      # several accounts on one PDF is a bank statement that happens to include a card
+    if res.kind == "card" and (len({t.account for t in res.txns}) > 1
+                               or sum(1 for t in res.txns if t.sign_src == "column") > len(res.txns) / 2):
+        # several accounts, or rows set out in Debits and Credits columns: a bank statement that also
+        # carries a card or credit line section somewhere in it
+        res.kind = "bank"
     if res.kind == "card":
         # a card prints charges as positive and payments as negative: the opposite of money in and out.
         # Figures whose sign came from the card's own printing are turned round; signs from a section
