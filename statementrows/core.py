@@ -42,6 +42,7 @@ ROLE_WORDS = [  # checked in this order, first hit wins
                 "money in", "paid in", "dépôt", "dépôts", "abono", "abonos",
                 "bijschrijving", "in")),
     ("amount", ("amount", "montant", "importe", "bedrag", "betrag", "valor")),
+    ("loan", ("disbursement", "disbursements", "principal", "payment", "payments", "interest")),
 ]
 OPENING_WORDS = ("balance brought forward", "brought forward", "opening balance",
                  "previous balance", "beginning balance", "balance forward",
@@ -329,8 +330,8 @@ def statement_end(lines: list[Line], order: str) -> date | None:
         for kind, rx in DATE_PATTERNS[:4]:
             for m in rx.finditer(t):
                 rd = RawDate(kind, m.groupdict(), m.end(), m.group(0))
-                if not rd.parts.get("y") or (kind == "num3" and len(rd.parts["y"]) == 2):
-                    continue
+                if not rd.parts.get("y") or (kind in ("dmon", "mond") and len(rd.parts["y"]) == 2):
+                    continue          # 'Dec 30 Dec 30' must not become 30 Dec 2030
                 if kind in ("dmon", "mond") and rd.parts["mon"].lower() not in MONTH_OF:
                     continue
                 d = resolve(rd, order, None)
@@ -490,7 +491,7 @@ def read_statement(path: str) -> Result:
     full = "\n".join(l.text for l in lines)
     low = full.lower()
     loc = guess_locale(full)
-    res.kind = "card" if sum(h in low for h in CARD_HINTS) >= 2 else "bank"
+    res.kind = "card" if sum(1 for h in CARD_HINTS if re.search(rf"\b{h}\b", low)) >= 2 else "bank"
     hint_us = ("$" in full and loc.decimal == "." and "cad" not in low) or "usd" in low
 
     # first pass: where the table header is, and every leading date
@@ -561,12 +562,20 @@ def read_statement(path: str) -> Result:
     last_page = 0
     cur_top = 0.0
     hdr_desc: tuple[float, float] | None = None
+    account_open: dict[str, Decimal] = {}
+    account_close: dict[str, Decimal] = {}
 
     def bounds() -> tuple[float, float]:
+        if desc_right():
+            return hdr_desc[0], hdr_desc[1]
         hi = min(c.x0 for c in cols) - 2 if cols else 1e9
         if hdr_desc:
             return hdr_desc[0], min(hi, hdr_desc[1])
         return (desc_x - 3 if desc_x is not None else -1e9), hi
+
+    def desc_right() -> bool:
+        # some credit unions print the description after the balance column
+        return bool(hdr_desc and cols and hdr_desc[0] > max(c.x0 for c in cols))
 
     def part(line: Line, start: int = 0, stop: int | None = None) -> str:
         # only the text inside the description column belongs to the description
@@ -604,7 +613,7 @@ def read_statement(path: str) -> Result:
             flush(cur, buf); buf = []
             cols, cur = h, None
             hdr_desc = header_desc_span(l)
-            for back in (lines[i - 1], lines[i - 2]) if i >= 2 else ():
+            for back in reversed(lines[max(0, i - 6): i]):
                 if back.page == l.page and ACCOUNT_RE.search(back.text):
                     name = re.sub(r"\s*\((continued|suite|cont\.?)\)\s*$", "", back.text.strip(), flags=re.I)
                     account = re.sub(r"\s{2,}", " ", name)
@@ -622,7 +631,11 @@ def read_statement(path: str) -> Result:
                 placed.append((c, v, l.span(m.start(), m.start() + 1)[0], m))
         if ds and placed and l.x0 < cols[0].x0:
             amt, bal = None, None
+            loan = any(c.role == "loan" for c, *_ in placed) or (
+                {c.role for c in cols} <= {"balance", "loan"} and len(cols) > 1)
             for c, v, a, m in placed:
+                if c.role == "loan":
+                    continue
                 if c.role == "balance":
                     bal = v
                 elif c.role == "debit":
@@ -638,21 +651,43 @@ def read_statement(path: str) -> Result:
                 if mark:
                     amt = abs(amt) if mark[-1].upper().startswith("C") else -abs(amt)
             note = ""
+            if loan and bal is not None and not _has_words(l, OPENING_WORDS + CLOSING_WORDS):
+                # a loan section prints interest, payment and disbursement; what moves the balance is
+                # the principal, so the amount is the change in what is owed, labelled as such
+                before = next((t.balance for t in reversed(res.txns) if t.account == account
+                               and t.balance is not None), account_open.get(account))
+                if before is not None:
+                    amt, note = bal - before, "loan: change in amount owed"
             if amt is None and bal is not None and not _has_words(l, OPENING_WORDS + CLOSING_WORDS) \
                     and re.search(r"[A-Za-z]{3}", l.text[pos:_char_at(l, min(a for _, _, a, _ in placed))]):
                 # a described row with a balance and no amount: a failed or informational entry.
                 # Kept as 0.00 so it is not silently lost.
                 amt, note = Decimal(0), "no amount printed"
+            if _has_words(l, CLOSING_WORDS):
+                # an 'Ending Balance' row: its debit and credit figures are the account's totals
+                for c, v, _, _ in placed:
+                    if c.role in ("debit", "credit"):
+                        totals.append((account, c.role, abs(v), None))
+                if bal is not None:
+                    account_close[account] = bal
+                flush(cur, buf); buf = []; cur = None
+                continue
             if amt is None or _has_words(l, OPENING_WORDS):
                 # a dated line carrying only a balance is a balance row, not a transaction
-                if bal is not None and _has_words(l, OPENING_WORDS) and res.opening is None:
-                    res.opening = bal
+                if bal is not None and _has_words(l, OPENING_WORDS):
+                    account_open.setdefault(account, bal)
+                    if res.opening is None:
+                        res.opening = bal
                 continue
             first_amt = min(a for _, _, a, _ in placed)
             cut = _char_at(l, first_amt)
             if desc_x is None:
                 desc_x = l.xs[pos][0] if pos < len(l.xs) else l.x0
-            desc_px = part_x(l, pos, cut)
+            if desc_right():
+                after = max(m.end() for _, _, _, m in placed)
+                desc_px = part_x(l, after, len(l.text))
+            else:
+                desc_px = part_x(l, pos, cut)
             desc = desc_px[0]
             ref = outside(l, pos, cut)
             ref = re.sub(r"(?<![\w/])(CR|DR|Cr|Dr)(?![\w/])", "", ref).strip()
@@ -677,6 +712,10 @@ def read_statement(path: str) -> Result:
                 # lines that are closer to this date line than to the row above
                 prev_top = cur_top if (cur is not None and cur.page == l.page) else -1e9
                 k = max(k, sum(1 for b in cand if (l.top - b.top) < (b.top - prev_top)))
+            if not desc and not k and not re.search(r"[A-Za-z]{3}", ref):
+                # a date and money with no words at all is a summary line, not a transaction;
+                # if it really was one, the running balance will break and say so
+                continue
             flush(cur, cand[: len(cand) - k])
             above = [part_x(b) for b in cand[len(cand) - k:]]
             buf = []
@@ -699,7 +738,8 @@ def read_statement(path: str) -> Result:
             continue
         low_l = l.text.lower().strip()
         for role, v, n in section_totals(l, loc):
-            totals.append((account, role, v, n))
+            if any(t.account == account and t.page == l.page for t in res.txns):
+                totals.append((account, role, v, n))   # only beside the rows it totals
         if any(low_l.startswith(w) or f" {w}" in low_l for w in STOP_WORDS) or _has_words(l, CLOSING_WORDS):
             flush(cur, buf); buf = []; cur = None
             continue
@@ -727,7 +767,7 @@ def read_statement(path: str) -> Result:
             res.problems.append("no transaction table found")
         return res
     res.period = statement_period(lines, order, end)
-    _check(res, totals + doc_totals)
+    _check(res, totals + doc_totals, account_open, account_close)
     _check_dates(res)
     return res
 
@@ -745,7 +785,7 @@ def statement_period(lines: list[Line], order: str, end: date | None) -> tuple[d
             a = match_date_at(t, k)
             if not a or (not a.parts.get("y") and a.kind not in ("dmon", "mond")):
                 continue
-            rest = re.match(r"\s*(?:-|–|—|to|au|al|bis|tot|through|until)\s*", t[a.end:], re.I)
+            rest = re.match(r"\s*(?:-|–|—|to|au|al|bis|tot|through|thru|until)\s*", t[a.end:], re.I)
             if not rest:
                 continue
             b = match_date_at(t, a.end + rest.end())
@@ -786,7 +826,7 @@ def _check_dates(res: Result) -> None:
             res.checks.append(f"dates: no statement period printed; rows run in order from {min(ds)} to {max(ds)}")
 
 
-ACCOUNT_RE = re.compile(r"(account|compte|cuenta|rekening|konto)\b.*\d{3,}", re.I)
+ACCOUNT_RE = re.compile(r"(account|compte|cuenta|rekening|konto)\b.*\d{3,}|^\s*\d{2,4}:\s+\S", re.I)
 TOTAL_RE = re.compile(
     r"(?:\btotal\s+(?:no\.?\s+of\s+)?|^\s*(?P<n>\d{1,4})\s+)"
     r"(?:(?P<cr>deposits?(?:\s*/\s*credits?)?|credits?|crédits?|dépôts?(?: et crédits)?|money in|paid in|incoming|abonos?)"
@@ -849,7 +889,8 @@ def _prev_top(lines: list[Line], i: int) -> float:
 CENT = Decimal("0.01")
 
 
-def _check(res: Result, totals=()) -> None:
+def _check(res: Result, totals=(), account_open=None, account_close=None) -> None:
+    account_open, account_close = account_open or {}, account_close or {}
     txns = res.txns
     accounts = list(dict.fromkeys(t.account for t in txns))
     has_bal = [t for t in txns if t.balance is not None]
@@ -870,9 +911,11 @@ def _check(res: Result, totals=()) -> None:
             p = t.balance
         sign = 1 if votes[1] >= votes[-1] else -1
         acct = txns[0].account
+        if acct in account_open:
+            prev = account_open[acct]
         for k, t in enumerate(txns):
             if t.account != acct:
-                acct, prev = t.account, None
+                acct, prev = t.account, account_open.get(t.account)
             if t.balance is None:
                 continue
             if prev is None:
@@ -898,6 +941,14 @@ def _check(res: Result, totals=()) -> None:
                           + (f" ({unc} first row(s) of an account had nothing above to check against)" if unc else ""))
         if res.closing is None and len(accounts) == 1:
             res.closing = has_bal[-1].balance
+    for acct, close in account_close.items():
+        rows = [t for t in txns if t.account == acct and t.balance is not None]
+        if rows and rows[-1].balance == close:
+            res.checks.append(f"{acct or 'the statement'}: last row's balance equals the printed ending balance {close}")
+        elif rows:
+            res.problems.append(f"{acct or 'the statement'}: last row's balance {rows[-1].balance} is not the printed "
+                                f"ending balance {close}")
+            breaks += 1
     seen_tot = set()
     for acct, role, want, n in totals:
         if acct is None and len(accounts) > 1:

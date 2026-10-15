@@ -231,3 +231,26 @@ def test_agami_numbers_exact_and_its_own_breaks_found(pdf):
 
 def test_agami_scan_is_reported_not_guessed():
     assert read_statement(str(CORPUS / "agami" / "Scanned_Type1_00001.pdf")).status == "needs_ocr"
+
+
+LOCAL = CORPUS / "_local"
+
+
+@pytest.mark.skipif(not (LOCAL / "cuanswers-sample.pdf").exists(), reason="local-only sample")
+def test_credit_union_with_seven_accounts():
+    res = read_statement(str(LOCAL / "cuanswers-sample.pdf"))
+    assert all(t.check.startswith("ok") for t in res.txns if t.balance is not None and t.check)
+    closes = [c for c in res.checks if "equals the printed ending balance" in c]
+    assert len(closes) == 7, closes
+    # the sample itself prints September dates in a December statement, and one 1/01/10
+    assert res.problems == ["dates: 4 row(s) fall outside the statement period 2019-12-01 to 2019-12-31 (rows [5, 6, 7, 43])"]
+    checking = [t for t in res.txns if t.account.startswith("110")]
+    assert len(checking) == 27 and checking[0].description == "BPV/Chase MasterCard"
+
+
+@pytest.mark.skipif(not (LOCAL / "buildersbank-sample.pdf").exists(), reason="local-only sample")
+def test_printed_totals_that_leave_out_rows_are_caught():
+    # the sample's own rows and balances agree; its printed totals skip 250 + 50 + 3.28
+    res = read_statement(str(LOCAL / "buildersbank-sample.pdf"))
+    assert all(t.check == "ok" for t in res.txns)
+    assert any("credits add up to 7153.28 (5 rows), the statement prints 6850.00" in p for p in res.problems)
