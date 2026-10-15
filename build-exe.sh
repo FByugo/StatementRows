@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds dist/StatementRows.exe with the Windows Python on this machine (run from WSL).
-# The build happens in C:\Temp\sr_build so the vault does not fill with build files.
+# The build happens in C:\Temp\sr_build so the project folder does not fill with build files.
 set -u
 B=/mnt/c/Temp/sr_build
 mkdir -p "$B"

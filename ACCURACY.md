@@ -1,6 +1,6 @@
 # StatementRows accuracy record (2026-10-15)
 
-Written on claude-opus-5-5, not Fable 5. Every number here came from a command run in this session, but the conclusions need a re-check on Fable 5.
+Every number here came from running the tool. The samples and the tests that check them are in this repo, except the ones marked local only.
 
 ## What "right" means here
 
