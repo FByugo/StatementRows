@@ -373,3 +373,21 @@ def test_card_statement_in_titled_sections(tmp):
     assert [float(t.amount) for t in res.txns] == [500.00, -6.45, -89.99, -41.10, -29.00]
     assert [t.date.isoformat() for t in res.txns] == ["2026-01-12", "2026-01-05", "2026-01-09", "2026-01-20",
                                                       "2026-02-03"]
+
+
+def test_one_crashing_file_does_not_stop_the_batch(tmp, monkeypatch):
+    import statementrows.cli as cli
+    (tmp / "in").mkdir()
+    make_statement(tmp / "in" / "a.pdf", ROWS, opening=1000.00)
+    make_statement(tmp / "in" / "b.pdf", ROWS, opening=1000.00)
+    real = cli.read_statement
+
+    def flaky(path, use_ocr=False):
+        if path.endswith("a.pdf"):
+            raise RuntimeError("simulated parser crash")
+        return real(path, use_ocr=use_ocr)
+    monkeypatch.setattr(cli, "read_statement", flaky)
+    r = CliRunner().invoke(app, [str(tmp / "in"), "--out", str(tmp / "o")])
+    assert r.exit_code == 0, r.output
+    summary = {s["file"]: s["status"] for s in csv.DictReader(open(tmp / "o" / "summary.csv"))}
+    assert summary == {"a.pdf": "error", "b.pdf": "ok"}

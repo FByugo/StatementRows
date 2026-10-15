@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from .core import read_statement
+from .core import Result, read_statement
 from .output import summary, write_all, write_combined
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -27,9 +27,12 @@ def main(
     out.mkdir(parents=True, exist_ok=True)
     report, results = [], []
     for f in files:
-        res = read_statement(str(f), use_ocr=ocr)
+        try:
+            res = read_statement(str(f), use_ocr=ocr)
+            write_all(res, out, f.stem)
+        except Exception as e:  # noqa: BLE001 - one bad file must not stop the batch
+            res = Result(path=str(f), status="error", problems=[f"could not be processed: {type(e).__name__}: {e}"[:300]])
         results.append(res)
-        write_all(res, out, f.stem)
         sm = summary(res)
         report.append(sm)
         mark = "ok " if res.status == "ok" else "!! "
