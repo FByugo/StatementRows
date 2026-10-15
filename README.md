@@ -44,6 +44,6 @@ It runs on your computer. Nothing is uploaded and no copy of the PDF is made. It
 
 ## Tests
 
-`./check.sh` runs 53 tests (5 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
+`./check.sh` runs 55 tests (5 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
 
 Sample statements in `corpus/` are synthetic, from the Bankstatemently benchmark (MIT), AyonPal's parser repo (MIT), Synthesized (CC BY 4.0) and AgamiAI (Apache 2.0).

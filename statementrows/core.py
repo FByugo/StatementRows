@@ -187,15 +187,16 @@ class Locale:
         d = re.escape(decimal)
         cur = r"(?:[$€£¥₹]|Rs\.?|[A-Z]{3}\s?(?=[\d\-−]))"
         self.money = re.compile(
-            rf"(?<![\w.,/:])(?P<pre>[-+−]\s?)?(?P<c1>{cur}\s?)?(?P<pre2>[-+−])?"
+            rf"(?<![\w.,/:])(?P<open>\()?(?P<pre>[-+−]\s?)?(?P<c1>{cur}\s?)?(?P<pre2>[-+−])?"
             rf"(?P<num>\(?\d{{1,3}}(?:{th}\d{{3}})*{d}\d{{2}}\)?|\(?\d+{d}\d{{2}}\)?)"
-            rf"(?P<c2>\s?[$€£])?(?P<post>\s?(?:CR|DR|Cr|Dr|-|\+|−))?(?![\w,.]?\d)(?![A-Za-z])"
+            rf"(?P<c2>\s?[$€£])?(?P<close>\))?(?P<post>\s?(?:CR|DR|Cr|Dr|-|\+|−))?(?![\w,.]?\d)(?![A-Za-z])"
         )
         self.th = th
 
     def value(self, m: re.Match) -> Decimal:
         num = m.group("num")
-        neg = num.startswith("(") and num.endswith(")")
+        # (12.00), ($12.00) and (12.00 €) are all negative: the bracket can sit outside the currency sign
+        neg = (num.startswith("(") or bool(m.group("open"))) and (num.endswith(")") or bool(m.group("close")))
         num = num.strip("()")
         num = re.sub(self.th, "", num).replace(self.decimal, ".")
         v = Decimal(num)
@@ -1052,6 +1053,15 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
                         votes[s] += 1
             p, pend = t.balance, Decimal(0)
         sign = 1 if votes[1] >= votes[-1] else -1
+        if sign == -1 and res.kind == "bank":
+            # on a bank account the balance is money held, so it moves with each amount. If it only adds
+            # up with every amount reversed, the signs were misread; the bank's balance is the authority.
+            for t in txns:
+                if in_chain(t):
+                    t.amount = -t.amount
+            sign = 1
+            res.checks.append("signs: every amount's sign was reversed to match the bank's running balance; "
+                              "look at a few rows to confirm money in and money out are the right way round")
         acct = txns[0].account
         if acct in account_open:
             prev = account_open[acct]

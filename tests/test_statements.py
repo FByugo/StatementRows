@@ -428,3 +428,23 @@ def test_ofx_one_file_per_account(tmp):
     names = [p.name for p in paths]
     assert len(paths) == 8 and "cu-110-REGULAR-CHECKING.ofx" in names
     assert "<LEDGERBAL><BALAMT>223.29" in (tmp / "cu-110-REGULAR-CHECKING.ofx").read_text()
+
+
+def test_brackets_outside_the_dollar_sign(tmp):
+    # found by fuzzing: '($1,460.06)' lost its minus and the file still came back ok, every sign reversed
+    from statementrows.core import Locale
+    loc = Locale(".")
+    assert [loc.value(m) for m in loc.money.finditer("($1,460.06)  $(12.00)  (3.50 €)")] == \
+        [Decimal("-1460.06"), Decimal("-12.00"), Decimal("-3.50")]
+
+
+def test_amounts_printed_from_the_banks_side_are_turned_round(tmp):
+    # some statements print withdrawals as positive in a single column; the running balance says otherwise
+    flipped = [(d, desc, -a) for d, desc, a in ROWS]
+    bal, bals = 1000.00, []
+    for _, _, a in ROWS:
+        bal = round(bal + a, 2); bals.append(bal)
+    res = read_statement(str(make_statement(tmp / "f.pdf", flipped, opening=1000.00, balances=bals, closing=bal,
+                                            split_columns=False, header=("Date", "Description", "Amount", "Balance"))))
+    assert amounts(res) == [r[2] for r in ROWS]
+    assert any("sign was reversed" in c for c in res.checks)
