@@ -448,3 +448,21 @@ def test_amounts_printed_from_the_banks_side_are_turned_round(tmp):
                                             split_columns=False, header=("Date", "Description", "Amount", "Balance"))))
     assert amounts(res) == [r[2] for r in ROWS]
     assert any("sign was reversed" in c for c in res.checks)
+
+
+def test_random_statements_are_never_ok_and_wrong(tmp):
+    """The property that matters most: a statement may be flagged, but 'ok' must mean right."""
+    import random
+    from fuzz import build
+    wrong_but_ok, exact = [], 0
+    for i in range(30):
+        rows, cfg = build(tmp / f"r{i}.pdf", random.Random(7000 + i))
+        res = read_statement(str(tmp / f"r{i}.pdf"))
+        got = [(t.date, t.amount) for t in res.txns]
+        want = [(d, Decimal(f"{v:.2f}")) for d, _, v, _ in rows]
+        if got == want:
+            exact += 1
+        elif res.status == "ok":
+            wrong_but_ok.append((i, cfg))
+    assert wrong_but_ok == []
+    assert exact >= 26, exact

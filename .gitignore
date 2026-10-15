@@ -4,3 +4,4 @@ corpus/_local/
 __pycache__/
 out/
 dist/
+fuzz-out/
