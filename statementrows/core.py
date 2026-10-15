@@ -153,8 +153,39 @@ def _build_line(chars, page_no) -> Line:
     return Line(s, xs, min(c["top"] for c in chars), size, page_no)
 
 
+def _rotated_lines(page, page_no: int) -> list[Line]:
+    """Characters printed sideways or upside down, turned back to reading order. Each of the three
+    turns is tried and the one whose lines start with dates is kept."""
+    chars = [c for c in page.chars if c["text"].strip()]
+    W, H = float(page.width), float(page.height)
+    best, best_score = [], 0
+    for turn in (90, 270, 180):
+        moved = []
+        for c in chars:
+            x0, x1, t, b = c["x0"], c["x1"], c["top"], c["bottom"]
+            if turn == 90:
+                box = (t, b, W - x1, W - x0)
+            elif turn == 270:
+                box = (H - b, H - t, x0, x1)
+            else:
+                box = (W - x1, W - x0, H - b, H - t)
+            d = dict(c)
+            d.update(x0=box[0], x1=box[1], top=box[2], bottom=box[3], upright=True, matrix=None)
+            if turn != 180:
+                d["size"] = max(c.get("size", 0) or 0, x1 - x0)
+            moved.append(d)
+        ls = _lines_from_chars(moved, page_no)
+        score = sum(1 for l in ls if leading_dates(l.text)[0])
+        if score > best_score:
+            best, best_score = ls, score
+    return best
+
+
 def page_lines(page, page_no: int) -> list[Line]:
-    chars = [c for c in page.chars if _upright(c) and c["text"].strip() != ""]
+    return _lines_from_chars([c for c in page.chars if _upright(c) and c["text"].strip() != ""], page_no)
+
+
+def _lines_from_chars(chars, page_no: int) -> list[Line]:
     chars.sort(key=lambda c: (round(c["top"]), c["x0"]))
     rows: list[list[dict]] = []
     for c in chars:
@@ -192,8 +223,8 @@ class Locale:
         cur = r"(?:[$€£¥₹]|Rs\.?|[A-Z]{3}\s?(?=[\d\-−]))"
         self.money = re.compile(
             rf"(?<![\w.,/:])(?P<open>\()?(?P<pre>[-+−]\s?)?(?P<c1>{cur}\s?)?(?P<pre2>[-+−])?"
-            rf"(?P<num>\(?\d{{1,3}}(?:{th}\d{{3}})*{d}\d{{2}}\)?|\(?\d+{d}\d{{2}}\)?)"
-            rf"(?P<c2>\s?[$€£])?(?P<close>\))?(?P<post>\s?(?:CR|DR|Cr|Dr|-|\+|−))?(?![\w,.]?\d)(?![A-Za-z])"
+            rf"(?P<num>\(?\d{{1,2}}(?:,\d{{2}})+,\d{{3}}{d}\d{{2}}\)?|\(?\d{{1,3}}(?:{th}\d{{3}})*{d}\d{{2}}\)?|\(?\d+{d}\d{{2}}\)?)"
+            rf"(?P<c2>\s?[$€£])?(?P<close>\))?(?P<post>\s?(?:CR|DR|Cr|Dr|OD|-|\+|−))?(?![\w,.]?\d)(?![A-Za-z])"
         )
         self.th = th
 
@@ -205,7 +236,7 @@ class Locale:
         num = re.sub(self.th, "", num).replace(self.decimal, ".")
         v = Decimal(num)
         sign = (m.group("pre") or "") + (m.group("pre2") or "") + (m.group("post") or "")
-        if neg or "-" in sign or "−" in sign or "DR" in sign.upper():
+        if neg or "-" in sign or "−" in sign or "DR" in sign.upper() or "OD" in sign.upper():
             v = -v
         return v
 
@@ -262,7 +293,7 @@ def leading_dates(text: str) -> tuple[list[RawDate], int]:
         found, pos = _dates_from(text, start)
         if found:
             return found, pos
-        m = re.match(r"[A-Za-z]{0,3}\d[\w\-/]{0,15}\s+", text[start:])
+        m = re.match(r"(?:[A-Za-z]{0,3}\d[\w\-/]{0,15}\*?|[^\w\s]{1,2})\s+", text[start:])
         if not m:
             break
         start += m.end()
@@ -562,8 +593,13 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
         res.pages = len(pdf.pages)
         lines: list[Line] = []
         image_pages = 0
+        rotated_pages: list[int] = []
         for n, page in enumerate(pdf.pages, 1):
             pl = page_lines(page.filter(_upright), n)
+            if not pl and page.chars:
+                pl = _rotated_lines(page, n)        # text printed turned through 90, 180 or 270 degrees
+                if pl:
+                    rotated_pages.append(n)
             if not pl and use_ocr and _ocr.AVAILABLE:
                 pl = _ocr.ocr_page_lines(str(path), n - 1, n, float(page.width), float(page.height))
                 res.ocr_pages += 1
@@ -571,9 +607,17 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             area = sum(abs((i["x1"] - i["x0"]) * (i["bottom"] - i["top"])) for i in page.images)
             if area > 0.3 * page.width * page.height:
                 image_pages += 1
+    if res.pages == 0:
+        res.status = "unreadable"
+        res.problems.append("the PDF has no pages")
+        return res
     if not lines:
-        res.status = "needs_ocr"
-        res.problems.append("no text layer, this is a scan")
+        if image_pages:
+            res.status = "needs_ocr"
+            res.problems.append("no text layer, this is a scan")
+        else:
+            res.status = "unreadable"
+            res.problems.append("no text and no page images were found: the file may be damaged or blank")
         return res
 
     full = "\n".join(l.text for l in lines)
@@ -609,7 +653,7 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
         if find_header(lines, j):
             continue
         if (_has_words(l, OPENING_WORDS) or _has_words(l, CLOSING_WORDS)) and _summary_amount(l, loc) is None:
-            for nxt in lines[j + 1: j + 4]:
+            for nxt in [x for x in lines[j + 1: j + 4] if not leading_dates(x.text)[0]][:2]:
                 vals = list(_amounts(nxt, loc, 0))
                 if nxt.page != l.page or not vals:
                     continue
@@ -656,6 +700,9 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     section: str | None = None
     heading = ""                     # the text of the section heading, so totals meet only their own rows
     skip: set[int] = set()
+    last_header_text = ""
+    top_of_page, preamble = False, []
+    above_rows, carry_to_new = 0, False
     labels = {m.group(1): re.sub(r"\s{2,}", " ", l.text.strip()) for l in lines
               for m in [re.match(r"\s*(\d{2,4}):\s+\S", l.text)] if m}
     saw_balance_col = False
@@ -706,6 +753,8 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     for i, l in enumerate(lines):
         if l.page != last_page:
             flush(cur, buf); buf = []; last_page = l.page
+            top_of_page = l.page > 1            # until a header or a row says what these lines are
+            preamble = []
         if i in skip:
             continue
         h = find_header(lines, i)
@@ -714,8 +763,16 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
                 skip.add(i + 1)
             if any(c.role == "balance" for c in h):
                 saw_balance_col = True
-            flush(cur, buf); buf = []
-            cols, cur = h, None
+            same = re.sub(r"\s+", " ", l.text.strip()) == last_header_text
+            last_header_text = re.sub(r"\s+", " ", l.text.strip())
+            if same and cur is not None and cur.page != l.page:
+                buf = []         # the page's preamble above a repeated header is not part of any row
+            else:
+                flush(cur, buf); buf = []
+            top_of_page, preamble = False, []
+            cols = h
+            if not same:
+                cur = None       # a repeated header on the next page continues the same table and row
             hdr_desc = header_desc_span(l)
             found_label = False
             for back in reversed(lines[max(0, i - 6): i]):
@@ -776,6 +833,13 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             c = _assign(cols, b)
             if c:
                 placed.append((c, v, l.span(m.start(), m.start() + 1)[0], m))
+        if ds and placed and l.x0 < cols[0].x0 and top_of_page:
+            # a row before any header on this page: the table runs on without a repeated header, so the
+            # lines above it may be the end of the last row's description
+            carry_to_new = bool(res.txns) and above_rows > 0.3 * len(res.txns)
+            # when this statement prints part of a row's text above its date, the lines at the top of the
+            # page belong to the row below them; otherwise they finish the last row of the page before
+            top_of_page, buf, preamble = False, preamble + buf, []
         if ds and placed and l.x0 < cols[0].x0:
             amt, bal = None, None
             loan = any(c.role == "loan" for c, *_ in placed) or (
@@ -870,10 +934,22 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
                 # lines that are closer to this date line than to the row above
                 prev_top = cur_top if (cur is not None and cur.page == l.page) else -1e9
                 k = max(k, sum(1 for b in cand if (l.top - b.top) < (b.top - prev_top)))
+            if not desc and re.fullmatch(r"\d{2,10}\*?", ref.split()[0] if ref else "") and \
+                    (section == "debit" or "check" in last_header_text.lower() or "cheque" in last_header_text.lower()):
+                # 'Check No. | Date | Amount' lists: the number is the description, and a check is money out
+                desc_px = (f"CHECK {ref.split()[0].rstrip('*')}", 0.0, 0.0)
+                desc, amt, src, note = desc_px[0], -abs(amt), "section", "check"
             if not desc and not k and not re.search(r"[A-Za-z]{3}", ref):
                 # a date and money with no words at all is a summary line, not a transaction;
                 # if it really was one, the running balance will break and say so
                 continue
+            if carry_to_new or (cand and cur is not None and cur.page != l.page
+                                and res.txns and above_rows > 0.3 * len(res.txns)):
+                # the open row is on an earlier page and this statement prints text above its dates:
+                # the lines here start the new row rather than finish the old one
+                k, carry_to_new = len(cand), False
+            if k:
+                above_rows += 1
             flush(cur, cand[: len(cand) - k])
             above = [part_x(b) for b in cand[len(cand) - k:]]
             buf = []
@@ -890,6 +966,10 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             cur_top = l.top
             continue
         # a line with no date
+        if top_of_page:
+            if not placed and l.text.strip():
+                preamble.append(l)
+            continue
         title = l.text.strip()
         if (not placed and not re.search(r"\d", title) and len(title.split()) <= 5
                 and (desc_x is None or l.x0 < desc_x - 3)):
@@ -919,7 +999,10 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
                 key = "checks" if multi else (section or "")
                 if any(t.account == account and t.page == l.page for t in res.txns):
                     totals.append((account, key, role, v, n))   # only beside the rows it totals
-        if any(low_l.startswith(w) or f" {w}" in low_l for w in STOP_WORDS) or _has_words(l, CLOSING_WORDS):
+        at_left = desc_x is None or l.x0 < desc_x - 3      # 'TOTAL WINE & MORE' on a description line is a shop
+        if re.search(r"\bpage \d+ (of|/) ?\d+|\(continued\)|\bcontinued\b", low_l) and not placed:
+            continue             # a page header or 'continued' line: skip it, the row above is still open
+        if (at_left and any(low_l.startswith(w) or f" {w}" in low_l for w in STOP_WORDS)) or _has_words(l, CLOSING_WORDS):
             flush(cur, buf); buf = []; cur = None
             continue
         if placed:
@@ -927,11 +1010,12 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
                 continue                      # an informational zero line, not part of any row
             flush(cur, buf); buf = []; cur = None   # money on an undated line ends the row
             continue
-        if l.size and i and not find_header(lines, i - 1) and abs(l.top - _prev_top(lines, i)) > 3.2 * l.size:
+        if l.size and i and lines[i - 1].page == l.page and not find_header(lines, i - 1) \
+                and abs(l.top - _prev_top(lines, i)) > 3.2 * l.size:
             flush(cur, buf); buf = []; cur = None   # too far below the line above to belong to it
             continue
         text = l.text.strip()
-        if text and not re.fullmatch(r"[\d\s/.\-]+", text) and len(text) < 120:
+        if text and not re.fullmatch(r"[\d\s/.\-]+", text) and len(text) < 300:
             buf.append(l)
     flush(cur, buf)
 

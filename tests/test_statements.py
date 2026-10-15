@@ -94,9 +94,15 @@ def test_rows_over_several_pages(tmp):
 
 
 def test_scan_encrypted_and_broken(tmp):
+    from PIL import Image
+    Image.new("L", (850, 1100), 255).save(tmp / "page.png")
     scan = tmp / "scan.pdf"
-    c = canvas.Canvas(str(scan)); c.rect(50, 50, 400, 600, fill=1); c.save()
-    assert read_statement(str(scan)).status == "needs_ocr"
+    c = canvas.Canvas(str(scan)); c.drawImage(str(tmp / "page.png"), 0, 0, 612, 792); c.save()
+    assert read_statement(str(scan)).status == "needs_ocr"          # a picture of a page
+
+    blank = tmp / "blank.pdf"
+    c = canvas.Canvas(str(blank)); c.rect(50, 50, 400, 600, fill=1); c.save()
+    assert read_statement(str(blank)).status == "unreadable"        # no text and no picture: not called a scan
 
     locked = tmp / "locked.pdf"
     c = canvas.Canvas(str(locked), encrypt="secret"); c.drawString(50, 700, "x"); c.save()
