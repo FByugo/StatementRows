@@ -34,7 +34,7 @@ Columns: date, description, amount (money in positive, money out negative), dire
 
 Separate debit and credit columns, or one amount column with `-`, `( )`, a trailing minus or CR/DR. Dates with or without the year, day first or month first, month names in English, French, Dutch, Spanish and German. Descriptions on two or three lines, above or below the date. Statements with several accounts, including credit union statements with savings, checking, certificates and loans on one PDF. Statements with no running balance that split rows into "Deposits and other additions" and "Withdrawals and other subtractions" sections, where the heading decides the sign. Check lists with two or three checks to a line. A balance printed only once a day. Credit card statements.
 
-A scanned statement (a picture, no text) comes back as `needs_ocr`. A password protected one comes back as `encrypted`. Neither is guessed at.
+A scanned statement (a picture, no text) comes back as `needs_ocr`. A password protected one comes back as `encrypted`. Neither is guessed at. `--ocr` tries to read scans anyway. It's experimental and slow, and any number it misreads breaks the balance on that row, so you see exactly which rows to look at (results in ACCURACY.md).
 
 ## Your statements stay with you
 
@@ -42,6 +42,6 @@ It runs on your computer. Nothing is uploaded and no copy of the PDF is made. It
 
 ## Tests
 
-`./check.sh` runs 43 tests (4 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
+`./check.sh` runs 45 tests (4 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
 
 Sample statements in `corpus/` are synthetic, from the Bankstatemently benchmark (MIT), AyonPal's parser repo (MIT), Synthesized (CC BY 4.0) and AgamiAI (Apache 2.0).

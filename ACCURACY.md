@@ -51,3 +51,17 @@ Mutation proof:
 - **Scanned statements are refused.** There is no OCR on this machine.
 - **Credit card sections inside a combined statement** (the CU sample's page 7) are read, but nothing checks the sign of their amounts.
 - **Description accuracy depends on the layout**: about 94% on the two AgamiAI layouts, and 100% on the four other samples that ship answer files (AyonPal x3, Synthesized).
+
+## Scanned statements, OCR (experimental, off unless `--ocr`)
+
+RapidOCR (Apache-2.0) is installed in the venv, and the scanned page is turned into the same lines the text reader makes. Seven AgamiAI scans with answer files, run after two repair rules were added: random separators ("2.686,759.17" → 2,686,759.17) and a date stuck to a time. Each scan takes 15 to 25 s.
+
+| scan | rows found | date, amount and balance exact |
+|---|---|---|
+| Type 1, 00001 | 162/162 | 161; the flagged rows equal the dataset's own planted ones |
+| Type 1, 00002 | 161/161 | 144 |
+| Type 1, 00003 | 39/159 | 0, **fails** |
+| Type 1, 00004 | 155/155 | 151 |
+| Type 2, 00001..00003 | 127, 139 and 15 of about 160 | 24, 9, 5, **fails** |
+
+Every one of the seven came back `unbalanced`. None was reported as ok while wrong. Descriptions from OCR lose their spaces ("NEFTDr-8630..."), which is why description scores are near 0. Not good enough to sell. Usable as a first pass on a paid job, where a person retypes only the rows marked break.

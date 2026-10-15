@@ -18,6 +18,7 @@ def main(
     src: Path = typer.Argument(..., help="a statement PDF, or a folder of them"),
     out: Path = typer.Option(Path("out"), "--out", "-o", help="folder for the results"),
     strict: bool = typer.Option(False, help="exit 1 unless every statement balanced"),
+    ocr: bool = typer.Option(False, help="read scanned pages with OCR (experimental, slow; needs rapidocr-onnxruntime)"),
 ) -> None:
     files = sorted(p for p in src.iterdir() if p.suffix.lower() == ".pdf") if src.is_dir() else [src]
     if not files:
@@ -26,7 +27,7 @@ def main(
     out.mkdir(parents=True, exist_ok=True)
     report, results = [], []
     for f in files:
-        res = read_statement(str(f))
+        res = read_statement(str(f), use_ocr=ocr)
         results.append(res)
         write_all(res, out, f.stem)
         sm = summary(res)

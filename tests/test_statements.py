@@ -338,3 +338,21 @@ def test_balance_printed_once_a_day(tmp):
                                             closing=bal)))
     assert res.status == "unbalanced"
     assert any("row(s) above it without a balance" in p or "is off by 5.00" in p for p in res.problems), res.problems
+
+
+def test_ocr_number_repairs_keep_the_value():
+    from statementrows.ocr import fix_ocr_text as fix
+    assert fix("2.686,759.17") == "2,686,759.17"
+    assert fix("4,007.108.14") == "4,007,108.14"
+    assert fix("Rs.18.916.03") == "Rs. 18,916.03"
+    assert fix("85,389.81 207.90 3.18% 12.5") == "85,389.81 207.90 3.18% 12.5"
+    assert fix("01/01/202407:34:14AM") == "01/01/2024 07:34:14AM"
+
+
+@pytest.mark.skipif(not __import__("statementrows.ocr", fromlist=["AVAILABLE"]).AVAILABLE, reason="OCR not installed")
+def test_ocr_on_a_scanned_statement():
+    pdf = CORPUS / "agami" / "Scanned_Type1_00001.pdf"
+    assert read_statement(str(pdf)).status == "needs_ocr"          # off unless asked for
+    res = read_statement(str(pdf), use_ocr=True)
+    assert res.ocr_pages == 6 and len(res.txns) >= 150
+    assert any("read by OCR" in c for c in res.checks)

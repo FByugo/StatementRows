@@ -13,6 +13,8 @@ from decimal import Decimal, InvalidOperation
 
 import pdfplumber
 
+from . import ocr as _ocr
+
 # ---------------------------------------------------------------- words we look for
 
 MONTHS = {
@@ -93,6 +95,7 @@ class Result:
     checks: list[str] = field(default_factory=list)
     pages: int = 0
     period: tuple | None = None
+    ocr_pages: int = 0
 
 
 # ---------------------------------------------------------------- page → lines
@@ -488,7 +491,7 @@ def _summary_amount(line: Line, loc: Locale, words=OPENING_WORDS + CLOSING_WORDS
     return before[-1] if before else None
 
 
-def read_statement(path: str) -> Result:
+def read_statement(path: str, use_ocr: bool = False) -> Result:
     res = Result(path=str(path))
     try:
         pdf = pdfplumber.open(path)
@@ -506,7 +509,11 @@ def read_statement(path: str) -> Result:
         lines: list[Line] = []
         image_pages = 0
         for n, page in enumerate(pdf.pages, 1):
-            lines += page_lines(page.filter(_upright), n)
+            pl = page_lines(page.filter(_upright), n)
+            if not pl and use_ocr and _ocr.AVAILABLE:
+                pl = _ocr.ocr_page_lines(str(path), n - 1, n, float(page.width), float(page.height))
+                res.ocr_pages += 1
+            lines += pl
             area = sum(abs((i["x1"] - i["x0"]) * (i["bottom"] - i["top"])) for i in page.images)
             if area > 0.3 * page.width * page.height:
                 image_pages += 1
@@ -829,6 +836,9 @@ def read_statement(path: str) -> Result:
             res.problems.append("no transaction table found")
         return res
     res.period = statement_period(lines, order, end)
+    if res.ocr_pages:
+        res.checks.append(f"{res.ocr_pages} page(s) had no text and were read by OCR; a row where OCR misread "
+                          "a number breaks the balance, so look at any row marked break")
     _check(res, totals + doc_totals, account_open, account_close)
     _check_dates(res)
     return res
