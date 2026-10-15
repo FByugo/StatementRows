@@ -65,3 +65,7 @@ RapidOCR (Apache-2.0) is installed in the venv, and the scanned page is turned i
 | Type 2, 00001..00003 | 127, 139 and 15 of about 160 | 24, 9, 5, **fails** |
 
 Every one of the seven came back `unbalanced`. None was reported as ok while wrong. Descriptions from OCR lose their spaces ("NEFTDr-8630..."), which is why description scores are near 0. Not good enough to sell. Usable as a first pass on a paid job, where a person retypes only the rows marked break.
+
+## Speed (measured 2026-10-15 05:0x)
+
+20 statements, 120 pages, 3,251 rows: converted, checked and written as xlsx/csv/json plus the combined workbook in **15.5 s wall** on this PC (WSL, `/usr/bin/time`). That is under 1 s per statement. OCR is not included; it costs 15 to 25 s per scanned statement.
