@@ -15,7 +15,9 @@ If any of these fails, the file's status is `unbalanced` and the failing row is 
 Mutation proof:
 - Loosening the balance tolerance to 1,000,000 fails 3 tests.
 - Switching off the date check fails 1 test, even without the local-only samples.
-- `check.sh` exits 1 in both cases (measured directly, not through a pipe).
+- Ignoring the section heading's sign fails 1 test.
+- Dropping the once-a-day balance handling fails 1 test.
+- `check.sh` exits 1 in every case (measured directly, not through a pipe).
 
 ## First contact: each sample's result before any fix aimed at it
 
@@ -30,6 +32,9 @@ Mutation proof:
 | AgamiAI Type 1, 4 files | Apache-2.0, answer files | numbers 634/637, descriptions 0 | numbers 637/637, descriptions 601/637 |
 | AgamiAI Type 2, 4 files | Apache-2.0, answer files | no table found (serial and id before the date) | numbers 647/647, descriptions 614/647 |
 | CFPB handout, OppU card sample | public card examples | no table | no table, which is correct: one is a summary only, the other a template full of $XXX.XX |
+| Carson Bank sample | carsonbank.com, real bank, local only | 29 of 47 dates unreadable: one amount in a loan table ("26.08") was read as 26 August and flipped the whole file to day first | dates right; the 8 checks in its check list read; correctly `unbalanced`, because its summary counts 10 deposits and 54 debits against 34 and 21 rows |
+| SD Mines admissions sample | university page | no table | not looked at further |
+| Niagara Univ. examples, CU Answers style guide | university page, vendor guide | needs_ocr (pictures) | correct |
 
 ## The clean holdout: run once, nothing changed afterwards
 
@@ -41,7 +46,7 @@ Mutation proof:
 
 ## What this does NOT show yet
 
-- **Only one real bank's own statement** (Five Star) and one real credit union layout (CU Answers). Everything else is synthetic. Real Chase, Bank of America, Wells Fargo or credit union statements have not been seen.
+- **Two real banks' own samples** (Five Star, Carson) and one real credit union layout (CU Answers). Everything else is synthetic. Real Chase, Bank of America or Wells Fargo statements have not been seen. The section layout and the once-a-day balance are tested only on statements built here to imitate them.
 - **The holdout tests two layouts the code was tuned on.** It shows consistency within a layout, not coverage of new banks.
 - **Scanned statements are refused.** There is no OCR on this machine.
 - **Credit card sections inside a combined statement** (the CU sample's page 7) are read, but nothing checks the sign of their amounts.
