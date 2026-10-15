@@ -46,12 +46,14 @@ ROLE_WORDS = [  # checked in this order, first hit wins
     ("amount", ("amount", "montant", "importe", "bedrag", "betrag", "valor")),
     ("loan", ("disbursement", "disbursements", "principal", "payment", "payments", "interest")),
 ]
-OPENING_WORDS = ("balance brought forward", "brought forward", "opening balance",
+OPENING_WORDS = ("balance last statement", "last statement balance", "prior balance", "previous statement balance",
+                 "balance from last statement", "balance brought forward", "brought forward", "opening balance",
                  "previous balance", "beginning balance", "balance forward",
                  "starting balance", "solde d'ouverture", "solde précédent",
                  "solde d’ouverture", "saldo anterior", "saldo inicial",
                  "beginsaldo", "vorheriger saldo", "balance b/f", "b/f")
-CLOSING_WORDS = ("new balance", "closing balance", "ending balance", "balance carried forward",
+CLOSING_WORDS = ("balance this statement", "this statement balance", "new balance", "closing balance",
+                 "ending balance", "balance carried forward",
                  "solde de fermeture", "solde de clôture", "nouveau solde", "saldo final",
                  "eindsaldo", "neuer saldo", "balance c/f", "statement balance")
 STOP_WORDS = ("total", "totals", "subtotal", "sub-total", "year-to-date", "interest charges",
@@ -392,12 +394,11 @@ def _role(label: str) -> str | None:
     return None
 
 
-def find_header(lines: list[Line], i: int) -> list[Col] | None:
-    """A table header: a date word plus money words, or at least two money words one of them a balance.
-    Read word by word, because headers are often printed with single spaces between columns."""
-    line = lines[i]
-    if re.search(r"\d[.,]\d{2}(?!\d)", line.text):
-        return None                  # a line carrying money is a row or a summary, never a header
+CONTINUATION_WORDS = {"additions", "subtractions", "balance", "amount", "amounts", "($)", "(-)", "(+)", "code",
+                      "no.", "no", "number", "date", "debits", "credits", "out", "in", "paid", "($)"}
+
+
+def _header_groups(line: Line) -> tuple[list[list], bool]:
     size = line.size or 8
     groups: list[list] = []          # [role, x0, x1, label]
     has_date = False
@@ -414,15 +415,65 @@ def find_header(lines: list[Line], i: int) -> list[Col] | None:
                 g[0], g[1] = r, a        # the column starts at the word that names it
         else:
             groups.append([r, a, b, word])
-    cols = []
-    for r, a, b, label in groups:
         if r == "date":
             has_date = True
-        elif r:
-            cols.append(Col(r, a, b, label))
+    return groups, has_date
+
+
+def _continuation(lines: list[Line], i: int) -> Line | None:
+    """The second line of a two-line header ('Deposits/ Withdrawals/ Ending daily' over
+    'Additions Subtractions balance'): no money, right below, made only of column words."""
+    if i + 1 >= len(lines):
+        return None
+    l, n = lines[i], lines[i + 1]
+    if n.page != l.page or re.search(r"\d", n.text) or n.top - l.top > 1.8 * (l.size or 8):
+        return None
+    words = n.text.split()
+    if not words or len(words) > 8:
+        return None
+    ok = all(w.lower().strip("():/") in CONTINUATION_WORDS or _role(w) for w in words)
+    return n if ok else None
+
+
+def find_header(lines: list[Line], i: int) -> list[Col] | None:
+    """A table header: a date word plus money words, or at least two money words one of them a balance.
+    Read word by word, because headers are often printed with single spaces between columns."""
+    line = lines[i]
+    if re.search(r"\d[.,]\d{2}(?!\d)", line.text):
+        return None                  # a line carrying money is a row or a summary, never a header
+    text = line.text.strip()
+    plain = [w for w in text.split() if not _role(w) and w.lower().strip(":.,()") not in DESC_WORDS
+             and not any(re.match(rf"{d}", w.lower()) for d in DATE_WORDS)
+             and w.lower().strip("():/.,#") not in CONTINUATION_WORDS]
+    if len(plain) > 6 or text.endswith("."):
+        return None                  # a sentence that happens to say 'deposit' and 'balance' is not a header
+    if i + 1 < len(lines) and lines[i + 1].page == line.page:
+        nxt = lines[i + 1]
+        vals = list(re.finditer(r"\d[.,]\d{2}(?!\d)", nxt.text))
+        if len(vals) >= 2 and not leading_dates(nxt.text)[0] and not re.search(r"[A-Za-z]{4}", nxt.text):
+            return None              # labels over a line of figures: a summary box, read by the summary reader
+    groups, has_date = _header_groups(line)
+    cont = _continuation(lines, i)
+    if cont is not None:
+        for m in re.finditer(r"\S+", cont.text):
+            a, b = cont.span(m.start(), m.end())
+            g = next((g for g in groups if a <= g[2] + 3 and b >= g[1] - 3), None)
+            if g is None:
+                groups.append([_role(m.group(0)), a, b, m.group(0)])
+                continue
+            g[3] = g[3] + " " + m.group(0)
+            g[1], g[2] = min(g[1], a), max(g[2], b)
+            if g[0] is None:
+                g[0] = _role(g[3])
+    cols = [Col(r, a, b, label) for r, a, b, label in groups if r and r != "date"]
     roles = {c.role for c in cols}
     if not cols or not (has_date or (len(roles) >= 2 and "balance" in roles)):
         return None
+    if "loan" in roles and not re.search(r"principal|interest|disburs|advance", line.text, re.I):
+        # 'Payment' beside 'Deposit' is money out, not a loan's payment against principal
+        for c in cols:
+            if c.role == "loan":
+                c.role = "debit"
     # a header word that names a money column must sit well to the right of the line start
     if max(c.x1 for c in cols) < line.x0 + 150:
         return None
@@ -555,7 +606,7 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     dated_bal: list[tuple[date, Decimal]] = []
     doc_totals = []
     for j, l in enumerate(lines):
-        if find_header([l], 0):
+        if find_header(lines, j):
             continue
         if (_has_words(l, OPENING_WORDS) or _has_words(l, CLOSING_WORDS)) and _summary_amount(l, loc) is None:
             for nxt in lines[j + 1: j + 4]:
@@ -604,6 +655,10 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     hdr_desc: tuple[float, float] | None = None
     section: str | None = None
     heading = ""                     # the text of the section heading, so totals meet only their own rows
+    skip: set[int] = set()
+    labels = {m.group(1): re.sub(r"\s{2,}", " ", l.text.strip()) for l in lines
+              for m in [re.match(r"\s*(\d{2,4}):\s+\S", l.text)] if m}
+    saw_balance_col = False
     multi = False
     account_open: dict[str, Decimal] = {}
     account_close: dict[str, Decimal] = {}
@@ -651,11 +706,18 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     for i, l in enumerate(lines):
         if l.page != last_page:
             flush(cur, buf); buf = []; last_page = l.page
+        if i in skip:
+            continue
         h = find_header(lines, i)
         if h:
+            if _continuation(lines, i) is not None:
+                skip.add(i + 1)
+            if any(c.role == "balance" for c in h):
+                saw_balance_col = True
             flush(cur, buf); buf = []
             cols, cur = h, None
             hdr_desc = header_desc_span(l)
+            found_label = False
             for back in reversed(lines[max(0, i - 6): i]):
                 if back.page == l.page and ACCOUNT_RE.search(back.text):
                     name = re.sub(r"\s*\((continued|suite|cont\.?)\)\s*$", "", back.text.strip(), flags=re.I)
@@ -669,7 +731,18 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
                             account_open[name] = account_open.pop("")
                         totals[:] = [(name if a == "" else a, sk, r, v, n) for a, sk, r, v, n in totals]
                     account = name
+                    found_label = True
                     break
+            if not found_label:
+                # no label right above: a page that names the account only by number ('Member Number
+                # XXXXXX993-900') belongs to the account labelled '900: ...' elsewhere in the statement
+                for back in reversed(lines[max(0, i - 30): i]):
+                    if back.page != l.page:
+                        break
+                    hit = next((labels[n] for n in re.findall(r"-(\d{2,4})\b", back.text) if n in labels), None)
+                    if hit:
+                        account = hit
+                        break
             lt = l.text.lower()
             second_is_trans = "trans" in lt and lt.find("trans") > lt.find("date") >= 0
             section, heading = _section_heading(lines, i)
@@ -863,6 +936,10 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     flush(cur, buf)
 
     _join_descriptions(res.txns)
+    if saw_balance_col and res.txns and all(t.balance is None for t in res.txns):
+        res.problems.append("the table has a balance column but no balance could be read from it, so the rows were "
+                            "not checked against it")
+        res.status = "unbalanced"
     if res.kind == "card" and (len({t.account for t in res.txns}) > 1
                                or sum(1 for t in res.txns if t.sign_src == "column") > len(res.txns) / 2):
         # several accounts, or rows set out in Debits and Credits columns: a bank statement that also

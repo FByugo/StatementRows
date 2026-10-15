@@ -55,7 +55,10 @@ CASES = {
     "G_many_debit_totals.pdf": lambda s: s.status == "ok",
     "H_date_range_in_description.pdf": lambda s: s.status == "ok",
     "I_card_summary_table.pdf": lambda s: s.status == "ok" and s.opening == D("812.40") and s.closing == D("478.94"),
-    "J_payment_column.pdf": lambda s: s.status == "ok" and len(s.txns) == 6,
+    # the red team's own builder printed the first balance as 200.00 where 1,000.00 - 1,200.00 is -200.00;
+    # the right answer is the six rows by column and exactly that one complaint
+    "J_payment_column.pdf": lambda s: len(s.txns) == 6 and s.txns[0].amount == D("-1200.00")
+        and [p[:6] for p in s.problems] == ["row 1 "] and "off by 400.00" in s.problems[0],
     "P_check_list_one_per_line.pdf": lambda s: s.status == "ok" and sorted(t.amount for t in s.txns if t.amount < 0) == [D("-100.00"), D("-50.00"), D("-25.50")],
     "P3_checks_chase_style.pdf": lambda s: s.status == "ok" and sorted(t.amount for t in s.txns if t.amount < 0) == [D("-100.00"), D("-50.00"), D("-25.50")],
     "P2_checks_bofa_style.pdf": lambda s: s.status == "ok",
