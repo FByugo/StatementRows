@@ -356,3 +356,20 @@ def test_ocr_on_a_scanned_statement():
     res = read_statement(str(pdf), use_ocr=True)
     assert res.ocr_pages == 6 and len(res.txns) >= 150
     assert any("read by OCR" in c for c in res.checks)
+
+
+from conftest import make_card_sections
+
+
+def test_card_statement_in_titled_sections(tmp):
+    res = read_statement(str(make_card_sections(
+        tmp / "card.pdf", previous=812.40,
+        credits=[("01/12", "Payment Thank You-Mobile", 500.00)],
+        purchases=[("01/05", "STARBUCKS STORE 1182", 6.45), ("01/09", "AMAZON MKTPL*2X41", 89.99),
+                   ("01/20", "SHELL OIL 57444", 41.10)],
+        fees=[("02/03", "LATE FEE", 29.00)])))
+    assert res.status == "ok", res.problems
+    assert res.kind == "card"
+    assert [float(t.amount) for t in res.txns] == [500.00, -6.45, -89.99, -41.10, -29.00]
+    assert [t.date.isoformat() for t in res.txns] == ["2026-01-12", "2026-01-05", "2026-01-09", "2026-01-20",
+                                                      "2026-02-03"]

@@ -131,3 +131,33 @@ def make_sectioned(path: Path, *, opening: float, deposits, withdrawals, checks,
     c.drawString(50, y, "Total checks"); c.drawRightString(540, y, f"-${ck:,.2f}")
     c.save()
     return path
+
+
+def make_card_sections(path: Path, *, previous: float, credits, purchases, fees=()) -> Path:
+    """A card statement split into titled sections, the way the big US card issuers print it:
+    payments printed negative, purchases positive, no running balance."""
+    c = canvas.Canvas(str(path), pagesize=letter)
+    c.setFont("Helvetica", 9)
+    cr, pu, fe = sum(a for *_, a in credits), sum(a for *_, a in purchases), sum(a for *_, a in fees)
+    new = round(previous - cr + pu + fe, 2)
+    y = 740
+    for label, val in (("Previous Balance", f"${previous:,.2f}"), ("Payment, Credits", f"-${cr:,.2f}"),
+                       ("Purchases", f"+${pu:,.2f}"), ("Fees Charged", f"+${fe:,.2f}"),
+                       ("New Balance", f"${new:,.2f}"), ("Minimum Payment Due", "$40.00"),
+                       ("Opening/Closing Date 01/04/26 - 02/03/26", "")):
+        c.drawString(50, y, label); c.drawRightString(330, y, val); y -= 13
+    y -= 12
+    c.drawString(50, y, "ACCOUNT ACTIVITY"); y -= 16
+    c.drawString(50, y, "Date of Transaction"); c.drawString(150, y, "Merchant Name or Transaction Description")
+    c.drawRightString(540, y, "$ Amount"); y -= 16
+    for title, rows, neg in (("PAYMENTS AND OTHER CREDITS", credits, True), ("PURCHASE", purchases, False),
+                             ("FEES CHARGED", fees, False)):
+        if not rows:
+            continue
+        c.drawString(50, y, title); y -= 14
+        for d, desc, a in rows:
+            c.drawString(50, y, d); c.drawString(150, y, desc)
+            c.drawRightString(540, y, f"{'-' if neg else ''}{a:,.2f}"); y -= 13
+        y -= 8
+    c.save()
+    return path

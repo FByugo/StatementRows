@@ -711,7 +711,7 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             if amt is not None and section in ("debit", "credit") and bal is None \
                     and all(c.role == "amount" for c, *_ in placed):
                 # Deposits / Withdrawals sections print every amount unsigned; the heading says which it is
-                amt = (-abs(amt) if section == "debit" else amt)
+                amt = -abs(amt) if section == "debit" else abs(amt)
             elif amt is not None and all(c.role != "debit" and c.role != "credit" for c, *_ in placed):
                 first_a = min(a for _, _, a, _ in placed)
                 mark = re.findall(r"(?<![\w/])(CR|DR|Cr|Dr|C|D)(?![\w/])",
@@ -799,6 +799,15 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             cur_top = l.top
             continue
         # a line with no date
+        title = l.text.strip()
+        if (not placed and not re.search(r"\d", title) and len(title.split()) <= 5
+                and (desc_x is None or l.x0 < desc_x - 3)):
+            kind = section_kind([l, l], 1)
+            if kind in ("debit", "credit"):
+                # a sub-heading inside the table ('PURCHASE', 'PAYMENTS AND OTHER CREDITS') sets the sign
+                flush(cur, buf); buf = []; cur = None
+                section = kind
+                continue
         if _has_words(l, OPENING_WORDS):
             bals = [v for c, v, _, _ in placed if c.role == "balance"] or [v for c, v, _, _ in placed]
             if bals and res.opening is None:
@@ -900,7 +909,8 @@ def _check_dates(res: Result) -> None:
 
 
 SECTION_DEBIT = ("withdrawal", "subtraction", "checks paid", "checks", "cheques", "debits", "debit card",
-                 "electronic payments", "payments and transfers", "fees", "service charges", "atm")
+                 "electronic payments", "payments and transfers", "fees", "service charges", "atm",
+                 "purchase", "cash advance", "interest charged", "balance transfer")
 SECTION_CREDIT = ("deposit", "addition", "credits", "money in")
 SECTION_SKIP = ("daily balance", "balance summary", "daily ending balance", "ledger balance", "reward points")
 
