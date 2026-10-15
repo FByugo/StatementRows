@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .core import read_statement
-from .output import write_all
+from .output import write_all, write_combined
 
 
 def collect(args: list[str]) -> list[Path]:
@@ -34,6 +34,7 @@ def main() -> int:
         return 2
     out = files[0].parent / "excel"
     good = 0
+    results = []
     for f in files:
         try:
             res = read_statement(str(f))
@@ -41,11 +42,14 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001 - one bad file must not stop the rest
             print(f"!! {f.name}: could not be read ({type(e).__name__})")
             continue
+        results.append(res)
         ok = res.status == "ok"
         good += ok
         print(f"{'ok' if ok else '!!'} {f.name}: {res.status}, {len(res.txns)} rows")
         for p in res.problems:
             print(f"     - {p}")
+    if len(results) > 1:
+        write_combined(results, out / "all statements.xlsx")
     print(f"\n{good} of {len(files)} statement(s) balanced. The Excel files are in:\n{out}")
     input("\nPress Enter to close.")
     return 0

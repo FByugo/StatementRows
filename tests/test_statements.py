@@ -267,3 +267,14 @@ def test_drag_and_drop_writes_next_to_the_files(tmp, monkeypatch, capsys):
     assert dragdrop.main() == 0
     assert (tmp / "excel" / "jan.xlsx").exists()
     assert "1 of 1 statement(s) balanced" in capsys.readouterr().out
+
+
+def test_combined_workbook_one_sheet_per_statement(tmp):
+    (tmp / "in").mkdir()
+    make_statement(tmp / "in" / "jan.pdf", ROWS, opening=1000.00)
+    make_statement(tmp / "in" / "feb.pdf", ROWS, opening=3856.28, period="02/01/2026 - 02/28/2026")
+    r = CliRunner().invoke(app, [str(tmp / "in"), "--out", str(tmp / "o")])
+    assert r.exit_code == 0, r.output
+    wb = openpyxl.load_workbook(tmp / "o" / "all statements.xlsx")
+    assert wb.sheetnames == ["Summary", "feb", "jan"]
+    assert wb["jan"].max_row == len(ROWS) + 1

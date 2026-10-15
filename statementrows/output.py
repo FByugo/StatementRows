@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -64,26 +65,7 @@ def write_xlsx(res: Result, path: Path) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Transactions"
-    ws.append(COLUMNS)
-    for c in ws[1]:
-        c.font = Font(bold=True)
-    bad = PatternFill("solid", fgColor="F8D7DA")
-    for t in res.txns:
-        ws.append([t.date, t.description, float(t.amount), t.direction,
-                   float(t.balance) if t.balance is not None else None, t.check, t.account, t.page, t.date_2,
-                   t.note, t.ref])
-        r = ws.max_row
-        ws.cell(r, 1).number_format = "yyyy-mm-dd"
-        ws.cell(r, 9).number_format = "yyyy-mm-dd"
-        ws.cell(r, 3).number_format = "#,##0.00"
-        ws.cell(r, 5).number_format = "#,##0.00"
-        if t.check.startswith("break") or t.date is None:
-            for c in ws[r]:
-                c.fill = bad
-    widths = {"A": 12, "B": 60, "C": 13, "D": 10, "E": 14, "F": 24, "G": 30, "H": 6, "I": 12, "J": 20, "K": 16}
-    for col, w in widths.items():
-        ws.column_dimensions[col].width = w
-    ws.freeze_panes = "A2"
+    _fill_transactions(ws, res)
 
     s = wb.create_sheet("Check")
     sm = summary(res)
@@ -102,6 +84,58 @@ def write_xlsx(res: Result, path: Path) -> None:
     s.column_dimensions["A"].width = 22
     s.column_dimensions["B"].width = 110
     wb.save(path)
+
+
+def _fill_transactions(ws, res: Result) -> None:
+    ws.append(COLUMNS)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    bad = PatternFill("solid", fgColor="F8D7DA")
+    for t in res.txns:
+        ws.append([t.date, t.description, float(t.amount), t.direction,
+                   float(t.balance) if t.balance is not None else None, t.check, t.account, t.page, t.date_2,
+                   t.note, t.ref])
+        r = ws.max_row
+        ws.cell(r, 1).number_format = "yyyy-mm-dd"
+        ws.cell(r, 9).number_format = "yyyy-mm-dd"
+        ws.cell(r, 3).number_format = "#,##0.00"
+        ws.cell(r, 5).number_format = "#,##0.00"
+        if t.check.startswith("break") or t.date is None:
+            for c in ws[r]:
+                c.fill = bad
+    for col, w in {"A": 12, "B": 60, "C": 13, "D": 10, "E": 14, "F": 24, "G": 30, "H": 6, "I": 12,
+                   "J": 20, "K": 16}.items():
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+
+
+def write_combined(results: list[Result], path: Path) -> Path:
+    """One workbook: a Summary sheet, then one sheet per statement in the order given."""
+    wb = Workbook()
+    s = wb.active
+    s.title = "Summary"
+    head = ["file", "status", "rows", "opening", "closing", "money_in", "money_out", "period", "problems"]
+    s.append(head)
+    for c in s[1]:
+        c.font = Font(bold=True)
+    used: set[str] = {"Summary"}
+    for res in results:
+        sm = summary(res)
+        s.append([sm[k] if k != "problems" else " | ".join(sm["problems"]) for k in head])
+        if res.status != "ok":
+            for c in s[s.max_row]:
+                c.fill = PatternFill("solid", fgColor="F8D7DA")
+        # sheet names: 31 characters at most, no []:*?/\ and unique
+        name = re.sub(r"[\[\]:*?/\\]", "_", Path(res.path).stem)[:31] or "statement"
+        base, n = name, 2
+        while name in used:
+            name = f"{base[:28]}~{n}"; n += 1
+        used.add(name)
+        _fill_transactions(wb.create_sheet(name), res)
+    for col, w in {"A": 34, "B": 12, "C": 7, "D": 13, "E": 13, "F": 13, "G": 13, "H": 26, "I": 90}.items():
+        s.column_dimensions[col].width = w
+    wb.save(path)
+    return path
 
 
 def write_all(res: Result, out_dir: Path, stem: str) -> list[Path]:
