@@ -87,3 +87,46 @@ ROWS = [
 @pytest.fixture
 def tmp(tmp_path):
     return tmp_path
+
+
+def make_sectioned(path: Path, *, opening: float, deposits, withdrawals, checks, signed_withdrawals=False,
+                   wrong_total: float = 0.0) -> Path:
+    """The layout many US banks use: no running balance, rows split into titled sections with a total
+    under each, and checks listed two per line. deposits/withdrawals: (date, description, amount);
+    checks: (number, date, amount). All amounts given as positive numbers."""
+    c = canvas.Canvas(str(path), pagesize=letter)
+    c.setFont("Helvetica", 9)
+    dep, wd, ck = sum(a for *_, a in deposits), sum(a for *_, a in withdrawals), sum(a for *_, a in checks)
+    closing = round(opening + dep - wd - ck, 2)
+    y = 740
+    for text, val in (("Beginning balance on January 1, 2026", f"${opening:,.2f}"),
+                      ("Deposits and other additions", f"{dep:,.2f}"),
+                      ("Withdrawals and other subtractions", f"-{wd:,.2f}"),
+                      ("Checks", f"-{ck:,.2f}"),
+                      ("Ending balance on January 31, 2026", f"${closing:,.2f}")):
+        c.drawString(50, y, text); c.drawRightString(400, y, val); y -= 14
+    y -= 12
+
+    def section(title, rows, total_label, total, sign):
+        nonlocal y
+        c.drawString(50, y, title); y -= 14
+        c.drawString(50, y, "Date"); c.drawString(110, y, "Description"); c.drawRightString(540, y, "Amount"); y -= 14
+        for d, desc, a in rows:
+            c.drawString(50, y, d); c.drawString(110, y, desc)
+            c.drawRightString(540, y, f"{'-' if sign < 0 and signed_withdrawals else ''}{a:,.2f}"); y -= 13
+        c.drawString(50, y, total_label); c.drawRightString(540, y, f"${total:,.2f}"); y -= 22
+
+    section("Deposits and other additions", deposits, "Total deposits and other additions", dep, 1)
+    section("Withdrawals and other subtractions", withdrawals, "Total withdrawals and other subtractions",
+            wd + wrong_total, -1)
+    c.drawString(50, y, "Checks"); y -= 14
+    for x in (50, 300):
+        c.drawString(x, y, "Date"); c.drawString(x + 60, y, "Check #"); c.drawRightString(x + 200, y, "Amount")
+    y -= 14
+    for k in range(0, len(checks), 2):
+        for x, (num, d, a) in zip((50, 300), checks[k:k + 2]):
+            c.drawString(x, y, d); c.drawString(x + 60, y, num); c.drawRightString(x + 200, y, f"{a:,.2f}")
+        y -= 13
+    c.drawString(50, y, "Total checks"); c.drawRightString(540, y, f"-${ck:,.2f}")
+    c.save()
+    return path

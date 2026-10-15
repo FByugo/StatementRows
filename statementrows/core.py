@@ -70,6 +70,7 @@ class Txn:
     raw_date: str = ""
     date_2: date | None = None
     account: str = ""
+    section: str = ""            # which table on the page: "" for the main one, "credit"/"debit"/"checks"
     note: str = ""
     ref: str = ""                # cheque number, branch code or reference printed in its own column
     parts: list = field(default_factory=list, repr=False)   # the description, one entry per printed line
@@ -532,8 +533,6 @@ def read_statement(path: str) -> Result:
     for j, l in enumerate(lines):
         if find_header([l], 0):
             continue
-        for role, v, n in section_totals(l, loc):
-            doc_totals.append((None, role, v, n))
         if (_has_words(l, OPENING_WORDS) or _has_words(l, CLOSING_WORDS)) and _summary_amount(l, loc) is None:
             for nxt in lines[j + 1: j + 4]:
                 vals = list(_amounts(nxt, loc, 0))
@@ -572,13 +571,15 @@ def read_statement(path: str) -> Result:
     account = ""
     second_is_trans = False
     cur: Txn | None = None
-    totals: list[tuple[str, str, Decimal, int | None]] = []
+    totals: list[tuple[str, str, str, Decimal, int | None]] = []
     buf: list[Line] = []             # undated text lines waiting to be given to a row
     pre_k: int | None = None         # how many description lines a row prints ABOVE its date line
     desc_x: float | None = None
     last_page = 0
     cur_top = 0.0
     hdr_desc: tuple[float, float] | None = None
+    section: str | None = None
+    multi = False
     account_open: dict[str, Decimal] = {}
     account_close: dict[str, Decimal] = {}
 
@@ -641,14 +642,36 @@ def read_statement(path: str) -> Result:
                                 t.account = name
                         if "" in account_open:
                             account_open[name] = account_open.pop("")
-                        totals[:] = [(name if a == "" else a, r, v, n) for a, r, v, n in totals]
+                        totals[:] = [(name if a == "" else a, sk, r, v, n) for a, sk, r, v, n in totals]
                     account = name
                     break
             lt = l.text.lower()
             second_is_trans = "trans" in lt and lt.find("trans") > lt.find("date") >= 0
+            section = section_kind(lines, i)
+            if section == "skip":
+                cols = None            # a daily balance table lists balances, not transactions
+                continue
+            multi = (sum(1 for c in cols if c.role == "amount") >= 2
+                     and not any(c.role in ("debit", "credit", "balance") for c in cols)
+                     and len(re.findall(r"\bdate\b", lt)) >= 2)
             continue
         if not cols:
+            for role, v, n in section_totals(l, loc):
+                doc_totals.append((None, "", role, v, n))     # printed outside any table: whole statement
             continue
+        if multi:
+            # several records side by side: Number Date Amount | Number Date Amount ...
+            got = _multi_records(l, loc, order, end)
+            for d, raw, label, v in got:
+                sign = -1 if section != "credit" else 1
+                t = Txn(d, label or "CHECK", sign * abs(v), None, l.page, raw_date=raw, account=account,
+                        section="checks")
+                t.note = "check" if section != "credit" else ""
+                t.parts = [(t.description, 0.0, 0.0)]
+                res.txns.append(t)
+            if got:
+                cur = None
+                continue
         ds, pos = leading_dates(l.text)
         placed = []
         for m, v, a, b in _amounts(l, loc, pos if ds else 0):
@@ -670,7 +693,11 @@ def read_statement(path: str) -> Result:
                     amt = abs(v) if amt is None else amt
                 else:
                     amt = v if amt is None else amt
-            if amt is not None and all(c.role != "debit" and c.role != "credit" for c, *_ in placed):
+            if amt is not None and section in ("debit", "credit") and bal is None \
+                    and all(c.role == "amount" for c, *_ in placed):
+                # Deposits / Withdrawals sections print every amount unsigned; the heading says which it is
+                amt = (-abs(amt) if section == "debit" else amt)
+            elif amt is not None and all(c.role != "debit" and c.role != "credit" for c, *_ in placed):
                 first_a = min(a for _, _, a, _ in placed)
                 mark = re.findall(r"(?<![\w/])(CR|DR|Cr|Dr|C|D)(?![\w/])",
                                   " ".join(w for w, a in _words(l, pos, _char_at(l, first_a))))
@@ -693,7 +720,7 @@ def read_statement(path: str) -> Result:
                 # an 'Ending Balance' row: its debit and credit figures are the account's totals
                 for c, v, _, _ in placed:
                     if c.role in ("debit", "credit"):
-                        totals.append((account, c.role, abs(v), None))
+                        totals.append((account, section or "", c.role, abs(v), None))
                 if bal is not None:
                     account_close[account] = bal
                 flush(cur, buf); buf = []; cur = None
@@ -749,7 +776,7 @@ def read_statement(path: str) -> Result:
             d2 = resolve(ds[1], order, end) if len(ds) > 1 else None
             cur = Txn(d2 if (second_is_trans and d2) else d1, "", amt, bal, l.page,
                       raw_date=" ".join(r.text for r in ds), date_2=d1 if (second_is_trans and d2) else d2,
-                      account=account)
+                      account=account, section=section or "")
             cur.note = note
             cur.ref = ref
             cur.parts = [x for x in above + [desc_px] if x[0]]
@@ -764,8 +791,9 @@ def read_statement(path: str) -> Result:
             continue
         low_l = l.text.lower().strip()
         for role, v, n in section_totals(l, loc):
+            key = "checks" if multi else (section or "")
             if any(t.account == account and t.page == l.page for t in res.txns):
-                totals.append((account, role, v, n))   # only beside the rows it totals
+                totals.append((account, key, role, v, n))   # only beside the rows it totals
         if any(low_l.startswith(w) or f" {w}" in low_l for w in STOP_WORDS) or _has_words(l, CLOSING_WORDS):
             flush(cur, buf); buf = []; cur = None
             continue
@@ -842,7 +870,8 @@ def _check_dates(res: Result) -> None:
     elif not missing:
         ds = [t.date for t in res.txns]
         back = sum(1 for x, y, t1, t2 in zip(ds, ds[1:], res.txns, res.txns[1:])
-                   if y < x and t1.account == t2.account)
+                   if y < x and t1.account == t2.account and t1.section == t2.section
+                   and t1.section != "checks")      # check lists run by check number, not by date
         span = (max(ds) - min(ds)).days
         if back or span > 62:
             res.problems.append(f"dates: no statement period printed, and the rows run from {min(ds)} to {max(ds)}"
@@ -852,11 +881,61 @@ def _check_dates(res: Result) -> None:
             res.checks.append(f"dates: no statement period printed; rows run in order from {min(ds)} to {max(ds)}")
 
 
+SECTION_DEBIT = ("withdrawal", "subtraction", "checks paid", "checks", "cheques", "debits", "debit card",
+                 "electronic payments", "payments and transfers", "fees", "service charges", "atm")
+SECTION_CREDIT = ("deposit", "addition", "credits", "money in")
+SECTION_SKIP = ("daily balance", "balance summary", "daily ending balance", "ledger balance", "reward points")
+
+
+def section_kind(lines: list[Line], i: int) -> str | None:
+    """The heading just above a table: 'skip', 'debit', 'credit' or None."""
+    for back in reversed(lines[max(0, i - 3): i]):
+        if back.page != lines[i].page:
+            break
+        t = back.text.lower()
+        if re.search(r"\d[.,]\d{2}", t):
+            break                      # a line with money in it is a row, not a heading
+        if any(w in t for w in SECTION_SKIP):
+            return "skip"
+        if any(w in t for w in SECTION_CREDIT):
+            return "credit"
+        if any(w in t for w in SECTION_DEBIT):
+            return "debit"
+    return None
+
+
+def _multi_records(line: Line, loc: Locale, order: str, end: date | None):
+    """'4421 07/12/19 $12.53  4423 07/19/19 $114.00' -> one record per amount, each with its date
+    and the words or check number between the previous amount and this one."""
+    out, start = [], 0
+    for m in loc.money.finditer(line.text):
+        seg = line.text[start:m.start()]
+        start = m.end()
+        d = raw = None
+        for k in range(len(seg)):
+            if k and seg[k - 1].isalnum():
+                continue
+            rd = match_date_at(seg, k)
+            if rd:
+                d, raw = resolve(rd, order, end), rd.text
+                seg = (seg[:k] + " " + seg[rd.end:])
+                break
+        if raw is None:
+            continue
+        label = re.sub(r"\s+", " ", seg).strip(" *")
+        if re.fullmatch(r"\d{2,10}\*?", label or ""):
+            label = f"CHECK {label}"
+        out.append((d, raw, label, loc.value(m)))
+    return out
+
+
 ACCOUNT_RE = re.compile(r"(account|compte|cuenta|rekening|konto)\b.*\d{3,}|^\s*\d{2,4}:\s+\S", re.I)
 TOTAL_RE = re.compile(
     r"(?:\btotal\s+(?:no\.?\s+of\s+)?|^\s*(?P<n>\d{1,4})\s+|^\s*(?=(?:deposits?|checks?|withdrawals?)\s*/))"
-    r"(?:(?P<cr>deposits?(?:\s*/\s*credits?)?|credits?|crédits?|dépôts?(?: et crédits)?|money in|paid in|incoming|abonos?)"
-    r"|(?P<dr>withdrawals?|checks?\s*/\s*(?:debits?|withdrawals?)|cheques?\s*/\s*debits?|debits?|débits?|money out"
+    r"(?:(?P<cr>deposits?(?:\s*/\s*credits?)?|additions?|credits?|crédits?|dépôts?(?: et crédits)?|money in|paid in"
+    r"|incoming|abonos?)"
+    r"|(?P<dr>withdrawals?|checks?\s*/\s*(?:debits?|withdrawals?)|(?:amount of )?checks?(?: paid)?|subtractions?"
+    r"|electronic withdrawals?|cheques?\s*/\s*debits?|debits?|débits?|money out"
     r"|paid out|outgoing|cargos?|retraits?))"
     r"(?:\s+amount)?(?:\s*\((?P<n2>\d{1,4})\)|\s+(?P<n3>\d{1,4})(?=\s+\S*\d[.,]\d{2}))?", re.I)
 
@@ -987,13 +1066,14 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
                                 f"ending balance {close}")
             breaks += 1
     seen_tot = set()
-    for acct, role, want, n in totals:
+    for acct, sect, role, want, n in totals:
         if acct is None and len(accounts) > 1:
             continue                  # a document-wide total cannot be pinned to one of several accounts
-        if (acct or "", role) in seen_tot:
+        if (acct or "", sect, role) in seen_tot:
             continue
-        seen_tot.add((acct or "", role))
-        rows = [t for t in txns if (acct is None or t.account == acct) and t.direction == role]
+        seen_tot.add((acct or "", sect, role))
+        rows = [t for t in txns if (acct is None or (t.account == acct and t.section == sect))
+                and t.direction == role]
         got = sum((abs(t.amount) for t in rows), Decimal(0))
         name = acct or "the statement"
         counted = f" ({len(rows)} rows)" if n is None else f" ({len(rows)} rows, the statement says {n})"

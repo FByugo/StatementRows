@@ -284,7 +284,37 @@ def test_combined_workbook_one_sheet_per_statement(tmp):
 def test_summary_counts_that_disagree_with_the_rows():
     # Carson Bank's sample: rows chain, but its summary counts 10 deposits and 54 debits
     res = read_statement(str(LOCAL / "carsonbank-sample.pdf"))
-    assert all(t.check == "ok" for t in res.txns[1:])
+    assert all(t.check == "ok" for t in res.txns[1:] if t.section == "")
     assert {t.date.month for t in res.txns} == {7}        # an amount once flipped the whole file to day-first
+    checks = [t for t in res.txns if t.section == "checks"]
+    assert len(checks) == 8 and sum(t.amount for t in checks) == Decimal("-1783.32")        # an amount once flipped the whole file to day-first
     assert res.opening == Decimal("3005.93")
     assert any("the statement says 54" in p for p in res.problems)
+
+
+from conftest import make_sectioned
+
+DEP = [("01/02/26", "PAYROLL ACME CO DES:DIRECT DEP", 2500.00), ("01/16/26", "PAYROLL ACME CO DES:DIRECT DEP", 2500.00)]
+WD = [("01/03/26", "RENT JANUARY", 1200.00), ("01/05/26", "GROCERY STORE 1182", 86.42),
+      ("01/21/26", "TRANSIT CARD", 45.00)]
+CHK = [("1001", "01/10/26", 100.00), ("1002", "01/20/26", 50.00), ("1004", "01/27/26", 25.50)]
+
+
+@pytest.mark.parametrize("signed", [False, True])
+def test_sections_without_a_running_balance(tmp, signed):
+    res = read_statement(str(make_sectioned(tmp / "s.pdf", opening=1000.00, deposits=DEP, withdrawals=WD,
+                                            checks=CHK, signed_withdrawals=signed)))
+    assert res.status == "ok", res.problems
+    got = sorted((t.date.isoformat(), float(t.amount)) for t in res.txns)
+    want = sorted([("2026-01-02", 2500.0), ("2026-01-16", 2500.0), ("2026-01-03", -1200.0), ("2026-01-05", -86.42),
+                   ("2026-01-21", -45.0), ("2026-01-10", -100.0), ("2026-01-20", -50.0), ("2026-01-27", -25.5)])
+    assert got == want
+    assert [t.description for t in res.txns if t.section == "checks"] == ["CHECK 1001", "CHECK 1002", "CHECK 1004"]
+    assert sum(1 for c in res.checks if "add up to the printed total" in c) == 3
+
+
+def test_a_section_total_that_does_not_match(tmp):
+    res = read_statement(str(make_sectioned(tmp / "s.pdf", opening=1000.00, deposits=DEP, withdrawals=WD,
+                                            checks=CHK, wrong_total=9.99)))
+    assert res.status == "unbalanced"
+    assert any("statement prints 1341.41" in p for p in res.problems), res.problems
