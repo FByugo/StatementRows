@@ -835,6 +835,8 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     flush(cur, buf)
 
     _join_descriptions(res.txns)
+    if res.kind == "card" and sum(1 for t in res.txns if t.balance is not None) > len(res.txns) / 2:
+        res.kind = "bank"      # a running balance on most rows is a bank account, whatever else the file mentions
     if not res.txns:
         res.status = "no_table"
         if image_pages:
