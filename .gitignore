@@ -3,3 +3,4 @@ corpus/_local/
 *.egg-info/
 __pycache__/
 out/
+dist/

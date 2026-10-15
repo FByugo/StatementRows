@@ -256,3 +256,14 @@ def test_printed_totals_that_leave_out_rows_are_caught():
     res = read_statement(str(LOCAL / "buildersbank-sample.pdf"))
     assert all(t.check == "ok" for t in res.txns)
     assert any("credits add up to 7153.28 (5 rows), the statement prints 6850.00" in p for p in res.problems)
+
+
+def test_drag_and_drop_writes_next_to_the_files(tmp, monkeypatch, capsys):
+    from statementrows import dragdrop
+    make_statement(tmp / "jan.pdf", ROWS, opening=1000.00)
+    (tmp / "notes.txt").write_text("not a statement")
+    monkeypatch.setattr("builtins.input", lambda *_: "")
+    monkeypatch.setattr("sys.argv", ["StatementRows.exe", str(tmp)])
+    assert dragdrop.main() == 0
+    assert (tmp / "excel" / "jan.xlsx").exists()
+    assert "1 of 1 statement(s) balanced" in capsys.readouterr().out
