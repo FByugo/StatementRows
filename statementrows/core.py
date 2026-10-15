@@ -546,7 +546,10 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     every = [RawDate("num3", m.groupdict(), m.end(), m.group(0))
              for l in lines for m in DATE_PATTERNS[1][1].finditer(l.text)]
     order = _decisive(raws) or _decisive(every) or pick_order(raws or every, hint_us)
-    end = statement_end(lines, order)
+    periods = find_periods(lines, order, loc)
+    worded = [p for p in periods if p[3]]
+    chosen = (worded or periods or [None])[0]
+    end = chosen[1] if chosen else pick_end(lines, order, raws)
 
     # summary figures, read from anywhere in the document
     dated_bal: list[tuple[date, Decimal]] = []
@@ -879,22 +882,40 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
         else:
             res.problems.append("no transaction table found")
         return res
-    res.period = statement_period(lines, order, end)
+    res.period = (chosen[0], chosen[1]) if chosen else None
+    later = [p for p in worded if p[2] > (chosen[2] if chosen else 0) and (p[0], p[1]) != res.period]
+    second_statement = later[0] if later else None
     if res.ocr_pages:
         res.checks.append(f"{res.ocr_pages} page(s) had no text and were read by OCR; a row where OCR misread "
                           "a number breaks the balance, so look at any row marked break")
     _check(res, totals + doc_totals, account_open, account_close)
     _check_dates(res)
+    if second_statement:
+        a, b, page, _ = second_statement
+        res.problems.append(f"a second statement starts on page {page} ({a} to {b}); split the PDF so each "
+                            "statement is checked on its own")
+        res.status = "unbalanced" if res.status == "ok" else res.status
     return res
 
 
 PERIOD_RE = re.compile(r"(?P<a>\S+(?: \S+){0,2}?)\s*(?:-|–|—|to|au|al|bis|tot|through)\s*(?P<b>\S+(?: \S+){0,2})", re.I)
 
 
-def statement_period(lines: list[Line], order: str, end: date | None) -> tuple[date, date] | None:
-    """The first 'date - date' or 'date to date' pair printed in the document."""
+PERIOD_WORDS = ("period", "statement", "cycle", "through", "thru", "closing date", "billing", "from ",
+                "opening/closing", "période", "periode", "período", "zeitraum")
+
+
+def find_periods(lines: list[Line], order: str, loc: "Locale") -> list[tuple[date, date, int, bool]]:
+    """Every 'date - date' or 'date to date' pair that is not inside a transaction row, as
+    (start, end, page, the line says it is a period). A hotel stay 'MARRIOTT 01/10/26 - 01/13/26' on a
+    row is not the statement period; neither is the first pair found when a labelled one exists."""
+    out = []
     for l in lines:
         t = l.text
+        ds, pos = leading_dates(t)
+        if ds and any(True for _ in loc.money.finditer(t, pos)):
+            continue
+        low = t.lower()
         for k in range(len(t)):
             if k and t[k - 1].isalnum():
                 continue
@@ -907,12 +928,44 @@ def statement_period(lines: list[Line], order: str, end: date | None) -> tuple[d
             b = match_date_at(t, a.end + rest.end())
             if not b:
                 continue
-            db = resolve(b, order, end)
-            da = resolve(a, order, db or end)
-            if da and db and da < db and (db - da).days <= 400 and \
-                    (end is None or -7 <= (end - db).days <= 45):
-                return da, db
-    return None
+            db = resolve(b, order, None)          # the end of a period carries its year
+            da = resolve(a, order, db)
+            if da and db and da < db and (db - da).days <= 400:
+                out.append((da, db, l.page, any(w in low for w in PERIOD_WORDS)))
+                break
+    return out
+
+
+def pick_end(lines: list[Line], order: str, raws: list[RawDate]) -> date | None:
+    """No period printed: of all the full dates on the page, the statement date is the one that puts
+    the most rows within the 45 days before it. A promotion ending in 2028 or a form revised in 2023
+    puts none there, so it loses, however late or however often it is printed."""
+    seen: dict[date, set[int]] = {}
+    for l in lines:
+        for kind, rx in DATE_PATTERNS[:4]:
+            for m in rx.finditer(l.text):
+                rd = RawDate(kind, m.groupdict(), m.end(), m.group(0))
+                if not rd.parts.get("y") or (kind in ("dmon", "mond") and len(rd.parts["y"]) == 2):
+                    continue
+                if kind in ("dmon", "mond") and rd.parts["mon"].lower() not in MONTH_OF:
+                    continue
+                d = resolve(rd, order, None)
+                if d and 1990 < d.year < 2100:
+                    seen.setdefault(d, set()).add(l.page)
+    if not seen:
+        return None
+    if not raws:
+        return statement_end(lines, order)
+
+    def score(e):
+        n = 0
+        for rd in raws:
+            d = resolve(rd, order, e)
+            if d and -3 <= (e - d).days <= 45:
+                n += 1
+        return n, len(seen[e]), e
+    best = max(seen, key=score)
+    return best if score(best)[0] else statement_end(lines, order)
 
 
 def _check_dates(res: Result) -> None:
