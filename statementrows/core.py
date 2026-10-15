@@ -74,6 +74,8 @@ class Txn:
     account: str = ""
     section: str = ""            # which table on the page: "" for the main one, "credit"/"debit"/"checks"
     note: str = ""
+    sign_src: str = ""
+    heading: str = ""           # column · section · printed · unsigned · loan: where the sign came from
     ref: str = ""                # cheque number, branch code or reference printed in its own column
     parts: list = field(default_factory=list, repr=False)   # the description, one entry per printed line
     check: str = ""              # "ok", "break", or "" when there is nothing to check against
@@ -526,7 +528,10 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     full = "\n".join(l.text for l in lines)
     low = full.lower()
     loc = guess_locale(full)
-    res.kind = "card" if sum(1 for h in CARD_HINTS if re.search(rf"\b{h}\b", low)) >= 2 else "bank"
+    # a card statement is known by its structure: every US card statement must print a minimum payment
+    # beside the new balance. Words like 'credit card' or 'Apr' prove nothing: a checking account pays cards.
+    card_struct = "minimum payment" in low and ("new balance" in low or "statement balance" in low)
+    res.kind = "card" if card_struct else "bank"
     hint_us = ("$" in full and loc.decimal == "." and "cad" not in low) or "usd" in low
 
     # first pass: where the table header is, and every leading date
@@ -595,6 +600,7 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     cur_top = 0.0
     hdr_desc: tuple[float, float] | None = None
     section: str | None = None
+    heading = ""                     # the text of the section heading, so totals meet only their own rows
     multi = False
     account_open: dict[str, Decimal] = {}
     account_close: dict[str, Decimal] = {}
@@ -663,7 +669,7 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
                     break
             lt = l.text.lower()
             second_is_trans = "trans" in lt and lt.find("trans") > lt.find("date") >= 0
-            section = section_kind(lines, i)
+            section, heading = _section_heading(lines, i)
             if section == "skip":
                 cols = None            # a daily balance table lists balances, not transactions
                 continue
@@ -681,7 +687,7 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             for d, raw, label, v in got:
                 sign = -1 if section != "credit" else 1
                 t = Txn(d, label or "CHECK", sign * abs(v), None, l.page, raw_date=raw, account=account,
-                        section="checks")
+                        section="checks", sign_src="section", heading=heading)
                 t.note = "check" if section != "credit" else ""
                 t.parts = [(t.description, 0.0, 0.0)]
                 res.txns.append(t)
@@ -698,27 +704,34 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             amt, bal = None, None
             loan = any(c.role == "loan" for c, *_ in placed) or (
                 {c.role for c in cols} <= {"balance", "loan"} and len(cols) > 1)
+            src, printed = "", False
             for c, v, a, m in placed:
                 if c.role == "loan":
                     continue
                 if c.role == "balance":
                     bal = v
+                elif amt is not None:
+                    continue
                 elif c.role == "debit":
-                    amt = -abs(v) if amt is None else amt
+                    amt, src = -abs(v), "column"
                 elif c.role == "credit":
-                    amt = abs(v) if amt is None else amt
+                    amt, src = abs(v), "column"
                 else:
-                    amt = v if amt is None else amt
-            if amt is not None and section in ("debit", "credit") and bal is None \
-                    and all(c.role == "amount" for c, *_ in placed):
-                # Deposits / Withdrawals sections print every amount unsigned; the heading says which it is
-                amt = -abs(amt) if section == "debit" else abs(amt)
-            elif amt is not None and all(c.role != "debit" and c.role != "credit" for c, *_ in placed):
+                    amt = v
+                    printed = _printed_sign(m)
+                    src = "printed" if printed else "unsigned"
+            if amt is not None and src in ("printed", "unsigned"):
                 first_a = min(a for _, _, a, _ in placed)
-                mark = re.findall(r"(?<![\w/])(CR|DR|Cr|Dr|C|D)(?![\w/])",
-                                  " ".join(w for w, a in _words(l, pos, _char_at(l, first_a))))
+                before = [w for w, a in _words(l, pos, _char_at(l, first_a))]
+                mark = before[-1:] if before and before[-1] in ("CR", "DR", "Cr", "Dr") and not printed else []
                 if mark:
                     amt = abs(amt) if mark[-1].upper().startswith("C") else -abs(amt)
+                    src = "printed"
+                elif src == "unsigned" and section in ("debit", "credit") and bal is None:
+                    # Deposits / Withdrawals sections print amounts unsigned; the heading says which it is.
+                    # A minus the bank did print (a returned deposit) is never overruled.
+                    amt = -abs(amt) if section == "debit" else abs(amt)
+                    src = "section"
             note = ""
             if loan and bal is not None and not _has_words(l, OPENING_WORDS + CLOSING_WORDS):
                 # a loan section prints interest, payment and disbursement; what moves the balance is
@@ -792,8 +805,9 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
             d2 = resolve(ds[1], order, end) if len(ds) > 1 else None
             cur = Txn(d2 if (second_is_trans and d2) else d1, "", amt, bal, l.page,
                       raw_date=" ".join(r.text for r in ds), date_2=d1 if (second_is_trans and d2) else d2,
-                      account=account, section=section or "")
+                      account=account, section=section or "", heading=heading)
             cur.note = note
+            cur.sign_src = "loan" if note.startswith("loan") else src
             cur.ref = ref
             cur.parts = [x for x in above + [desc_px] if x[0]]
             res.txns.append(cur)
@@ -803,11 +817,11 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
         title = l.text.strip()
         if (not placed and not re.search(r"\d", title) and len(title.split()) <= 5
                 and (desc_x is None or l.x0 < desc_x - 3)):
-            kind = section_kind([l, l], 1)
+            kind, title_text = _section_heading([l, l], 1)
             if kind in ("debit", "credit"):
                 # a sub-heading inside the table ('PURCHASE', 'PAYMENTS AND OTHER CREDITS') sets the sign
                 flush(cur, buf); buf = []; cur = None
-                section = kind
+                section, heading = kind, title_text
                 continue
         if _has_words(l, OPENING_WORDS):
             bals = [v for c, v, _, _ in placed if c.role == "balance"] or [v for c, v, _, _ in placed]
@@ -815,10 +829,20 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
                 res.opening = bals[-1]
             continue
         low_l = l.text.lower().strip()
-        for role, v, n in section_totals(l, loc):
-            key = "checks" if multi else (section or "")
-            if any(t.account == account and t.page == l.page for t in res.txns):
-                totals.append((account, key, role, v, n))   # only beside the rows it totals
+        if heading and re.match(r"\s*total\b", low_l) and section in ("debit", "credit", None) or \
+                (heading and multi and re.match(r"\s*total\b", low_l)):
+            # 'Total ATM & Debit Card Withdrawals $273.18' under its own heading: compared with that
+            # section's rows only, net, whatever words the bank used
+            vals = [v for _, v, _, _ in _amounts(l, loc, 0)]
+            cnt = re.search(r"\((\d{1,4})\)|^\s*total\D*?\s(\d{1,4})\s+\S*\d[.,]\d{2}", l.text, re.I)
+            if vals and any(t.account == account and t.heading == heading for t in res.txns):
+                totals.append((account, "H:" + heading, section or "debit", abs(vals[-1]),
+                               int(next(g for g in cnt.groups() if g)) if cnt else None))
+        else:
+            for role, v, n in section_totals(l, loc):
+                key = "checks" if multi else (section or "")
+                if any(t.account == account and t.page == l.page for t in res.txns):
+                    totals.append((account, key, role, v, n))   # only beside the rows it totals
         if any(low_l.startswith(w) or f" {w}" in low_l for w in STOP_WORDS) or _has_words(l, CLOSING_WORDS):
             flush(cur, buf); buf = []; cur = None
             continue
@@ -836,8 +860,16 @@ def read_statement(path: str, use_ocr: bool = False) -> Result:
     flush(cur, buf)
 
     _join_descriptions(res.txns)
-    if res.kind == "card" and sum(1 for t in res.txns if t.balance is not None) > len(res.txns) / 2:
-        res.kind = "bank"      # a running balance on most rows is a bank account, whatever else the file mentions
+    if res.kind == "card" and len({t.account for t in res.txns}) > 1:
+        res.kind = "bank"      # several accounts on one PDF is a bank statement that happens to include a card
+    if res.kind == "card":
+        # a card prints charges as positive and payments as negative: the opposite of money in and out.
+        # Figures whose sign came from the card's own printing are turned round; signs from a section
+        # heading or a labelled column are already money-in/money-out and stay.
+        for t in res.txns:
+            if t.sign_src in ("printed", "unsigned"):
+                t.amount = -t.amount
+        res.checks.append("card statement: charges are written as money out and payments as money in")
     if not res.txns:
         res.status = "no_table"
         if image_pages:
@@ -920,19 +952,25 @@ SECTION_SKIP = ("daily balance", "balance summary", "daily ending balance", "led
 
 def section_kind(lines: list[Line], i: int) -> str | None:
     """The heading just above a table: 'skip', 'debit', 'credit' or None."""
+    return _section_heading(lines, i)[0]
+
+
+def _section_heading(lines: list[Line], i: int) -> tuple[str | None, str]:
+    """The heading just above a table, as (kind, its text)."""
     for back in reversed(lines[max(0, i - 3): i]):
         if back.page != lines[i].page:
             break
         t = back.text.lower()
         if re.search(r"\d[.,]\d{2}", t):
             break                      # a line with money in it is a row, not a heading
+        title = re.sub(r"\s*\((continued|cont\.?)\)\s*$", "", re.sub(r"\s+", " ", t.strip()))
         if any(w in t for w in SECTION_SKIP):
-            return "skip"
+            return "skip", title
         if any(w in t for w in SECTION_CREDIT):
-            return "credit"
+            return "credit", title
         if any(w in t for w in SECTION_DEBIT):
-            return "debit"
-    return None
+            return "debit", title
+    return None, ""
 
 
 def _multi_records(line: Line, loc: Locale, order: str, end: date | None):
@@ -969,6 +1007,12 @@ TOTAL_RE = re.compile(
     r"|electronic withdrawals?|cheques?\s*/\s*debits?|debits?|débits?|money out"
     r"|paid out|outgoing|cargos?|retraits?))"
     r"(?:\s+amount)?(?:\s*\((?P<n2>\d{1,4})\)|\s+(?P<n3>\d{1,4})(?=\s+\S*\d[.,]\d{2}))?", re.I)
+
+
+def _printed_sign(m: re.Match) -> bool:
+    """Did the bank print a sign on this figure: a minus, a plus, brackets or CR/DR after it?"""
+    return bool(m.group("pre") or m.group("pre2") or m.group("post") or m.group("open")
+                or m.group("num").startswith("("))
 
 
 def section_totals(line: Line, loc: Locale):
@@ -1087,6 +1131,15 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
                 if not pending and abs(abs(delta) - abs(t.amount)) < CENT:
                     t.amount = delta
                     t.check = "ok (direction from balance)"
+                    if t.sign_src in ("column", "section", "printed"):
+                        # the statement contradicts itself: say so instead of fixing it quietly
+                        where = {"column": "in its column", "section": "under its heading",
+                                 "printed": "with its printed sign"}[t.sign_src]
+                        res.problems.append(f"row {k + 1} ({t.raw_date} {t.description[:40]}): {where} it reads as "
+                                            f"{'money in' if delta < 0 else 'money out'}, but the balance moved the "
+                                            f"other way; the balance was trusted, so check this row")
+                        t.check = "break (balance and column disagree)"
+                        breaks += 1
                 else:
                     t.check = "break"
                     breaks += 1
@@ -1126,9 +1179,14 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
         if (acct or "", sect, role) in seen_tot:
             continue
         seen_tot.add((acct or "", sect, role))
-        rows = [t for t in txns if (acct is None or (t.account == acct and t.section == sect))
-                and t.direction == role]
-        got = sum((abs(t.amount) for t in rows), Decimal(0))
+        if sect.startswith("H:"):
+            rows = [t for t in txns if t.account == acct and t.heading == sect[2:]]
+            got = abs(sum((t.amount for t in rows), Decimal(0)))     # a section total is net
+            role = sect[2:]
+        else:
+            rows = [t for t in txns if (acct is None or (t.account == acct and t.section == sect))
+                    and t.direction == role]
+            got = sum((abs(t.amount) for t in rows), Decimal(0))
         name = acct or "the statement"
         counted = f" ({len(rows)} rows)" if n is None else f" ({len(rows)} rows, the statement says {n})"
         if abs(got - want) < CENT and (n is None or n == len(rows)):
@@ -1142,17 +1200,19 @@ def _check(res: Result, totals=(), account_open=None, account_close=None) -> Non
     if res.opening is not None and res.closing is not None and len(accounts) == 1:
         ok_bank = abs(res.opening + total - res.closing) < CENT
         ok_card = abs(res.opening - total - res.closing) < CENT
-        if ok_card and not ok_bank:
-            res.kind = "card"
-        if res.kind == "card" and ok_bank and not ok_card and not has_bal:
-            # the card printed purchases as positive: turn them into money out
+        if res.kind == "bank" and ok_card and not ok_bank and not has_bal \
+                and all(t.sign_src == "unsigned" for t in txns):
+            # nothing on the page said which way the figures go, and they only add up the other way round
             for t in txns:
                 t.amount = -t.amount
-            total = -total
-        if ok_bank or ok_card:
+            total, ok_bank, ok_card = -total, True, False
+            res.checks.append("signs: the figures carry no sign and only add up reversed, so they were reversed")
+        if (res.kind == "card" and ok_card) or (res.kind == "bank" and ok_bank):
             res.checks.append(f"totals: opening {res.opening} and the {len(txns)} rows give closing {res.closing}")
         else:
             gap = (res.closing - res.opening - total) if res.kind == "bank" else (res.opening - total - res.closing)
+            if (res.kind == "bank" and ok_card) or (res.kind == "card" and ok_bank):
+                gap = f"{gap}; they add up only with every sign reversed, so a sign was misread"
             res.problems.append(f"totals: opening {res.opening} plus the rows does not reach closing {res.closing} (off by {gap})")
             breaks += 1
     if breaks:
