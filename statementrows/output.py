@@ -109,8 +109,36 @@ def _fill_transactions(ws, res: Result) -> None:
     ws.freeze_panes = "A2"
 
 
+def _fill_all_rows(ws, results: list[Result]) -> None:
+    """Every row of every statement on one sheet, in date order, each row naming its file.
+    Clients ask for this by name ("merge bank statements chronologically", "sorted by date").
+    Rows keep their statement's order on the same date, and rows with no date go last, still shaded."""
+    ws.append(["file"] + COLUMNS)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    bad = PatternFill("solid", fgColor="F8D7DA")
+    tagged = [(Path(res.path).name, t) for res in results for t in res.txns]
+    tagged.sort(key=lambda ft: (ft[1].date is None, ft[1].date or 0))   # stable: same date keeps file order
+    for f, t in tagged:
+        ws.append([f, t.date, t.description, float(t.amount), t.direction,
+                   float(t.balance) if t.balance is not None else None, t.check, t.account, t.page, t.date_2,
+                   t.note, t.ref])
+        r = ws.max_row
+        ws.cell(r, 2).number_format = "yyyy-mm-dd"
+        ws.cell(r, 10).number_format = "yyyy-mm-dd"
+        ws.cell(r, 4).number_format = "#,##0.00"
+        ws.cell(r, 6).number_format = "#,##0.00"
+        if t.check.startswith("break") or t.date is None:
+            for c in ws[r]:
+                c.fill = bad
+    for col, w in {"A": 30, "B": 12, "C": 60, "D": 13, "E": 10, "F": 14, "G": 24, "H": 30, "I": 6, "J": 12,
+                   "K": 20, "L": 16}.items():
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+
+
 def write_combined(results: list[Result], path: Path) -> Path:
-    """One workbook: a Summary sheet, then one sheet per statement in the order given."""
+    """One workbook: a Summary sheet, an All rows sheet in date order, then one sheet per statement."""
     wb = Workbook()
     s = wb.active
     s.title = "Summary"
@@ -132,6 +160,7 @@ def write_combined(results: list[Result], path: Path) -> Path:
             name = f"{base[:28]}~{n}"; n += 1
         used.add(name)
         _fill_transactions(wb.create_sheet(name), res)
+    _fill_all_rows(wb.create_sheet("All rows", 1), results)
     for col, w in {"A": 34, "B": 12, "C": 7, "D": 13, "E": 13, "F": 13, "G": 13, "H": 26, "I": 90}.items():
         s.column_dimensions[col].width = w
     wb.save(path)

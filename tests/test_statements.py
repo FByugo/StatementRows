@@ -283,8 +283,25 @@ def test_combined_workbook_one_sheet_per_statement(tmp):
     r = CliRunner().invoke(app, [str(tmp / "in"), "--out", str(tmp / "o")])
     assert r.exit_code == 0, r.output
     wb = openpyxl.load_workbook(tmp / "o" / "all statements.xlsx")
-    assert wb.sheetnames == ["Summary", "feb", "jan"]
+    assert wb.sheetnames == ["Summary", "All rows", "feb", "jan"]
     assert wb["jan"].max_row == len(ROWS) + 1
+
+
+def test_all_rows_sheet_is_in_date_order_across_files(tmp):
+    # feb.pdf sorts before jan.pdf by name, so file order alone would put February first
+    (tmp / "in").mkdir()
+    feb = [("02" + d[2:], desc, amt) for d, desc, amt in ROWS]
+    make_statement(tmp / "in" / "jan.pdf", ROWS, opening=1000.00)
+    make_statement(tmp / "in" / "feb.pdf", feb, opening=3856.28, period="02/01/2026 - 02/28/2026")
+    r = CliRunner().invoke(app, [str(tmp / "in"), "--out", str(tmp / "o")])
+    assert r.exit_code == 0, r.output
+    ws = openpyxl.load_workbook(tmp / "o" / "all statements.xlsx")["All rows"]
+    body = list(ws.iter_rows(min_row=2, values_only=True))
+    assert len(body) == 2 * len(ROWS)
+    dates = [row[1] for row in body]
+    assert dates == sorted(dates)
+    assert [row[0] for row in body] == ["jan.pdf"] * len(ROWS) + ["feb.pdf"] * len(ROWS)
+    assert round(sum(row[3] for row in body), 2) == round(2 * sum(a for _, _, a in ROWS), 2)
 
 
 @pytest.mark.skipif(not (LOCAL / "carsonbank-sample.pdf").exists(), reason="local-only sample")

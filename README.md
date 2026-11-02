@@ -26,7 +26,7 @@ For each PDF:
 - `.xlsx` with a Transactions sheet (rows that broke are shaded) and a Check sheet saying what was checked and what didn't add up.
 - `.csv` and `.json` with the same rows.
 
-Plus `summary.csv` with one line per statement, and `all statements.xlsx` with a sheet per statement when there's more than one.
+Plus `summary.csv` with one line per statement, and `all statements.xlsx` when there's more than one: a Summary sheet, an All rows sheet with every row from every statement in date order and the file it came from, then a sheet per statement.
 
 `--ofx` also writes an `.ofx` file for Xero, Quicken and most accounting software. `--qbo BANKID` writes a QuickBooks `.qbo` file (QuickBooks only accepts a bank id it knows, so use your bank's). A statement with several accounts gets one file per account.
 
@@ -44,6 +44,6 @@ It runs on your computer. Nothing is uploaded and no copy of the PDF is made. It
 
 ## Tests
 
-`./check.sh` runs 101 tests (5 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), 45 more built by a separate review whose only job was to make it give a wrong answer, plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
+`./check.sh` runs 102 tests (5 of them use sample statements that can't be shared, and skip when those are missing): statements built to break it (a wrong balance, a missing row, an impossible date, every sign style), 45 more built by a separate review whose only job was to make it give a wrong answer, plus sample statements from outside sources with published answer files. `ACCURACY.md` has the full record, including what it got wrong the first time it saw each one.
 
 Sample statements in `corpus/` are synthetic, from the Bankstatemently benchmark (MIT), AyonPal's parser repo (MIT), Synthesized (CC BY 4.0) and AgamiAI (Apache 2.0).
